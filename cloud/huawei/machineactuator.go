@@ -17,22 +17,23 @@ limitations under the License.
 package huawei
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"os/exec"
 	"reflect"
 	"strings"
 
-	"encoding/json"
 	"github.com/golang/glog"
+	"gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
-	"net"
 	"sigs.k8s.io/cluster-api/cloud/huawei/clients"
 	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
 	"sigs.k8s.io/cluster-api/cloud/huawei/machinesetup"
@@ -43,16 +44,20 @@ import (
 )
 
 const (
-	MachineFileName         = "machines.yaml"
-	setupScriptPath         = "/home/setup.sh"
-	setupLogPath            = "/var/log/machineSetup.log"
-	InstanceIdAnnotationKey = "hw-resourceId"
-
-	SshKeyPairName                = "clusterapi"
-	PrivateKeyPrefix              = "-----BEGIN RSA PRIVATE KEY-----"
-	PrivateKeySuffix              = "-----END RSA PRIVATE KEY-----"
+	MachineFileName               = "machines.yaml"
+	setupScriptPath               = "/home/setup.sh"
+	setupLogPath                  = "/var/log/machineSetup.log"
+	InstanceIdAnnotationKey       = "hw-resourceId"
+	cloudConfigPath               = "/home/cloudconfig.yaml"
 	MachineControllerSshKeySecret = "machine-controller-sshkeys"
+	defaultKeyPairName            = "openstack"
+	tempPrivateKeyPath            = "/tmp/ssh/private"
 )
+
+type SshCreds struct {
+	user           string
+	privateKeyPath string
+}
 
 type HuaweiClient struct {
 	scheme              *runtime.Scheme
@@ -61,30 +66,60 @@ type HuaweiClient struct {
 	machineSetupWatcher *machinesetup.ConfigWatch
 	codecFactory        *serializer.CodecFactory
 	machineService      *clients.InstanceService
-	sshKeyPair          *clients.SshKeyPair
+	sshCred             *SshCreds
+}
+
+// readCloudConfigFromFile read cloud config from file
+// which should include username/password/region/tenentID...
+func readCloudConfigFromFile(path string) *clients.CloudConfig {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	bytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		return nil
+	}
+	cloudConfig := &clients.CloudConfig{}
+	if yaml.Unmarshal(bytes, cloudConfig) != nil {
+		return nil
+	}
+	return cloudConfig
 }
 
 func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterface, machineSetupConfigPath string) (*HuaweiClient, error) {
-	// TODO: Read cloud config(authurl, tenantId...) from file
+	// TODO: Need use env or flag to pass cloud config file path
+	cloudConfig := readCloudConfigFromFile(cloudConfigPath)
+	if cloudConfig == nil {
+		return nil, fmt.Errorf("Get cloud config from file %q err", cloudConfigPath)
+	}
 	machineService, err := clients.NewInstanceService(&clients.CloudConfig{})
 	if err != nil {
 		return nil, err
 	}
-	// Only applicable if it's running inside machine controller pod.
-	var keyPair *clients.SshKeyPair
+
+	var sshCred SshCreds
 	if _, err := os.Stat("/etc/sshkeys/private"); err == nil {
-		b, err := ioutil.ReadFile("/etc/sshkeys/private")
+		// get keypair from file if run inside machine controller pod
+		sshCred.privateKeyPath = "/etc/sshkeys/private"
+
+		b, err := ioutil.ReadFile("/etc/sshkeys/user")
 		if err == nil {
-			keyPair.PrivateKey = string(b)
+			sshCred.user = string(b)
 		} else {
 			return nil, err
 		}
-
-		b, err = ioutil.ReadFile("/etc/sshkeys/user")
-		if err == nil {
-			keyPair.Name = string(b)
-		} else {
-			return nil, err
+	} else {
+		// create new ssh keypair if bootstrap a new cluster
+		keyPairName := fmt.Sprintf("%s-%s", defaultKeyPairName, util.RandomString(4))
+		keyPair, err := machineService.CreateKeyPair(keyPairName)
+		if err != nil {
+			return nil, fmt.Errorf("Create sshkeypair err: %v", err)
+		}
+		ioutil.WriteFile(tempPrivateKeyPath, []byte(keyPair.PrivateKey), 0400)
+		sshCred = SshCreds{
+			user:           keyPair.Name,
+			privateKeyPath: tempPrivateKeyPath,
 		}
 	}
 
@@ -105,7 +140,7 @@ func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterfa
 		machineSetupWatcher: setupConfigWatcher,
 		kubeadmToken:        kubeadmToken,
 		scheme:              scheme,
-		sshKeyPair:          keyPair,
+		sshCred:             &sshCred,
 	}, nil
 }
 
@@ -156,7 +191,7 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 
 	cmd := fmt.Sprintf(machinesetup.StartCmd, setupScriptPath, setupScriptPath, setupLogPath)
 
-	instance, err = hc.machineService.InstanceCreate(providerConfig, personality, cmd)
+	instance, err = hc.machineService.InstanceCreate(providerConfig, personality, cmd, hc.sshCred.user)
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.CreateMachine(
 			"error creating Huawei instance: %v", err))
@@ -247,10 +282,10 @@ func (hc *HuaweiClient) GetIP(machine *clusterv1.Machine) (string, error) {
 	if instance.AccessIPv4 != "" && net.ParseIP(instance.AccessIPv4) != nil {
 		return instance.AccessIPv4, nil
 	}
-	return getIPFromInstance(instance)
+	return getIPFromInstanceAddress(instance)
 }
 
-func getIPFromInstance(instance *clients.Instance) (string, error) {
+func getIPFromInstanceAddress(instance *clients.Instance) (string, error) {
 	type huaweiNetwork struct {
 		Addr    string `json:"addr"`
 		Version string `json:"version"`
@@ -275,29 +310,19 @@ func getIPFromInstance(instance *clients.Instance) (string, error) {
 }
 
 func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error) {
-	if hc.sshKeyPair == nil {
-		glog.Infof("Ssh key pair is empty, need create new keypair to get kubeConfig")
-		keyPair, err := hc.machineService.CreateKeyPair(SshKeyPairName)
-		if err != nil {
-			return "", fmt.Errorf("Get kubeConfig failed, can't get ssh keypair: %v", err)
-		}
-		hc.sshKeyPair = keyPair
+	if hc.sshCred == nil {
+		return "", fmt.Errorf("Get kubeConfig failed, don't have ssh keypair information")
 	}
 	ip, err := hc.GetIP(master)
 	if err != nil {
 		return "", err
 	}
 
-	key, err := clients.GetPurePrivateKey(hc.sshKeyPair.PrivateKey)
-	if err != nil {
-		return "", err
-	}
-
 	result := strings.TrimSpace(util.ExecCommand(
-		"ssh", fmt.Sprintf("-%s", key),
+		"ssh", "-i", hc.sshCred.privateKeyPath,
 		"-o", "StrictHostKeyChecking no",
 		"-o", "UserKnownHostsFile /dev/null",
-		fmt.Sprintf("%s@%s", SshKeyPairName, ip),
+		fmt.Sprintf("%s@%s", "root", ip),
 		"echo STARTFILE; sudo cat /etc/kubernetes/admin.conf"))
 	parts := strings.Split(result, "STARTFILE")
 	if len(parts) != 2 {
@@ -307,6 +332,7 @@ func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error)
 }
 
 func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, initialMachines []*clusterv1.Machine, clientSet kubernetes.Clientset) error {
+	// create rolebinding
 	err := run("kubectl", "create", "rolebinding",
 		"-n", "kube-system", "machine-controller", "--role=extension-apiserver-authentication-reader",
 		"--serviceaccount=default:default")
@@ -314,27 +340,26 @@ func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, init
 		return err
 	}
 
-	// Create the named machines ConfigMap.
-	// TODO: After pivot-based bootstrap is done, the named machine should be a ConfigMap and this logic will be removed.
-	machineSetupConfig, err := hc.machineSetupWatcher.GetMachineSetupConfig()
-	if err != nil {
-		return err
-	}
+	// create secret for ssh private key
 	err = run("kubectl", "create", "secret", "generic", MachineControllerSshKeySecret,
-		fmt.Sprintf("--from-literal=private=\"%s\"", hc.sshKeyPair.PrivateKey),
-		"--from-literal=user="+SshKeyPairName)
+		"--from-file=private="+hc.sshCred.privateKeyPath, "--from-literal=user="+hc.sshCred.user)
 	if err != nil {
 		return fmt.Errorf("couldn't create service account key as credential: %v", err)
 	}
 
-	yaml, err := machineSetupConfig.GetYaml()
+	// create configmap for machine setup config
+	machineSetupConfig, err := hc.machineSetupWatcher.GetMachineSetupConfig()
+	if err != nil {
+		return err
+	}
+	setupConfigYaml, err := machineSetupConfig.GetYaml()
 	if err != nil {
 		return err
 	}
 	machineConfigMap := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "machine-setup"},
 		Data: map[string]string{
-			MachineFileName: yaml,
+			MachineFileName: setupConfigYaml,
 		},
 	}
 	if _, err := clientSet.CoreV1().ConfigMaps(corev1.NamespaceDefault).Create(&machineConfigMap); err != nil {
@@ -348,7 +373,6 @@ func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, init
 }
 
 func (hc *HuaweiClient) PostDelete(cluster *clusterv1.Cluster, machines []*clusterv1.Machine) error {
-	// TODO: need finish postDelete
 	return nil
 }
 
@@ -422,10 +446,6 @@ func (hc *HuaweiClient) validateMachine(machine *clusterv1.Machine, config *huaw
 	}
 	// TODO: other validate of huaweiCloud
 	return nil
-}
-
-func saveFile(contents, path string, perm os.FileMode) error {
-	return ioutil.WriteFile(path, []byte(contents), perm)
 }
 
 func run(cmd string, args ...string) error {

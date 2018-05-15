@@ -28,33 +28,16 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
 	"sigs.k8s.io/cluster-api/cloud/huawei/machinesetup"
-	"strings"
 )
 
 const (
-	PrivateKeyPrefix   = "-----BEGIN RSA PRIVATE KEY-----"
-	PrivateKeySuffix   = "-----END RSA PRIVATE KEY-----"
-	defaultKeyPairName = "root"
-	keyInsertPath      = "/root/.ssh/authorized_keys"
+	keyInsertPath = "/root/.ssh/authorized_keys"
 )
-
-// const (
-// 	defaultTimeout                = time.Duration(30) * time.Second
-// 	CreateServerJobType           = "createServer"
-// 	JobInit             JobStatus = "INIT"
-// 	JobSuccess          JobStatus = "SUCCESS"
-// 	JobFailed           JobStatus = "FAILED"
-// 	JobRunning          JobStatus = "RUNNING"
-//
-// 	hwTimeOut   = 10 * time.Minute
-// 	hwWaitSleep = 10 * time.Second
-// )
 
 type InstanceService struct {
 	provider     *gophercloud.ProviderClient
 	serverClient *gophercloud.ServiceClient
 	iamClient    *gophercloud.ServiceClient
-	SshKeyPair   *SshKeyPair
 }
 
 type CloudConfig struct {
@@ -81,6 +64,7 @@ type SshKeyPair struct {
 	// It is only present if this KeyPair was just returned from a Create call.
 	PrivateKey string `json:"private_key"`
 }
+
 type InstanceListOpts struct {
 	// Name of the image in URL format.
 	Image string `q:"image"`
@@ -123,22 +107,10 @@ func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
 		return nil, fmt.Errorf("Create serviceClient err: %v", err)
 	}
 
-	keyPairOpts := keypairs.CreateOpts{
-		Name: defaultKeyPairName,
-	}
-	keyPair, err := keypairs.Create(serverClient, keyPairOpts).Extract()
-	if err != nil {
-		return nil, fmt.Errorf("Create keyPair failed: %v", err)
-	}
 	return &InstanceService{
 		provider:     provider,
 		iamClient:    iamClient,
 		serverClient: serverClient,
-		SshKeyPair: &SshKeyPair{
-			Name:       keyPair.Name,
-			PrivateKey: keyPair.PrivateKey,
-			PublicKey:  keyPair.PublicKey,
-		},
 	}, nil
 }
 
@@ -160,7 +132,7 @@ func (is *InstanceService) UpdateToken() error {
 	return nil
 }
 
-func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderConfig, per []machinesetup.Personality, cmd string) (instance *Instance, err error) {
+func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderConfig, per []machinesetup.Personality, cmd string, keyName string) (instance *Instance, err error) {
 	var createOpts servers.CreateOpts
 	if config == nil {
 		return nil, fmt.Errorf("create Options need be specified to create instace.")
@@ -173,11 +145,6 @@ func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderC
 			Contents: file.Contents,
 		})
 	}
-	// Insert ssh public key
-	personality = append(personality, &servers.File{
-		Path:     keyInsertPath,
-		Contents: []byte(is.SshKeyPair.PublicKey),
-	})
 	createOpts = servers.CreateOpts{
 		Name:             config.Name,
 		ImageRef:         config.ImageRef,
@@ -191,7 +158,7 @@ func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderC
 	}
 	server, err := servers.Create(is.serverClient, keypairs.CreateOptsExt{
 		CreateOptsBuilder: createOpts,
-		KeyName:           "key_name",
+		KeyName:           keyName,
 	}).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("Create new server err: %v", err)
@@ -239,43 +206,6 @@ func (is *InstanceService) GetInstance(resourceId string) (instance *Instance, e
 	return serverToInstance(server), err
 }
 
-// func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
-// 	body, _ := json.Marshal(res.Body)
-// 	var serverResp struct {
-// 		JobID string `json:"job_id"`
-// 	}
-// 	if err := json.Unmarshal(body, &serverResp); err != nil {
-// 		return "", fmt.Errorf("Failed to get jobId: %v", err)
-// 	}
-//
-// 	start := time.Now()
-// 	client, res, jobRes := is.serverClient, Result{}, JobDetail{}
-//
-// 	for {
-// 		res.Response, res.Err = client.Get(client.ServiceURL("jobs", serverResp.JobID), &res.Body, nil)
-// 		if res.Err != nil {
-// 			return "", res.Err
-// 		}
-// 		body, _ = json.Marshal(res.Body)
-// 		json.Unmarshal(body, &jobRes)
-// 		if jobRes.Status == JobSuccess {
-// 			if jobRes.JobType != CreateServerJobType {
-// 				return "", nil
-// 			}
-// 			subJobs := jobRes.Entities.SubJobs
-// 			if len(subJobs) == 0 {
-// 				return "", nil
-// 			}
-// 			return subJobs[0].Entities["server_id"], nil
-// 		}
-// 		select {
-// 		case <-time.After(hwTimeOut):
-// 			return "", fmt.Errorf("wait job %q timed out after %v", jobRes.JobType, time.Since(start))
-// 		case <-time.After(hwWaitSleep):
-// 		}
-// 	}
-// }
-
 func (is *InstanceService) CreateKeyPair(name string) (*SshKeyPair, error) {
 	opts := keypairs.CreateOpts{
 		Name: name,
@@ -294,16 +224,6 @@ func (is *InstanceService) CreateKeyPair(name string) (*SshKeyPair, error) {
 
 func serverToInstance(server *servers.Server) *Instance {
 	return &Instance{*server}
-}
-
-func GetPurePrivateKey(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, PrivateKeyPrefix) || !strings.HasSuffix(s, PrivateKeySuffix) {
-		return "", fmt.Errorf("Private key format error")
-	}
-	s = strings.TrimPrefix(s, PrivateKeyPrefix)
-	s = strings.TrimSuffix(s, PrivateKeySuffix)
-	return strings.TrimSpace(s), nil
 }
 
 func getIPFromInstance(instance Instance) (string, error) {
