@@ -11,5 +11,5 @@ spec:
         serviceDomain: "cluster.local"
     providerConfig:
       value:
-        apiVersion: "gceproviderconfig/v1alpha1"
-        kind: "GCEProviderConfig"
+        apiVersion: "huaweiproviderconfig/v1alpha1"
+        kind: "HuaweiProviderConfig"

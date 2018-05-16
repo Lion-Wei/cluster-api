@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiserver/pkg/util/logs"
 
+	"sigs.k8s.io/cluster-api/cloud/huawei"
 	"sigs.k8s.io/cluster-api/cloud/terraform"
 	"sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset"
 	"sigs.k8s.io/cluster-api/pkg/controller/config"
@@ -31,8 +32,8 @@ import (
 )
 
 var (
-	kubeadmToken      = pflag.String("token", "", "Kubeadm token to use to join new machines")
-	namedMachinesPath = pflag.String("namedmachines", "", "path to named machines yaml file")
+	kubeadmToken           = pflag.String("token", "", "Kubeadm token to use to join new machines")
+	machineSetupConfigPath = pflag.String("machinesetup", "machine_setup_configs.yaml", "machine setup configs yaml file")
 )
 
 func init() {
@@ -55,9 +56,9 @@ func main() {
 		glog.Fatalf("Could not create client for talking to the apiserver: %v", err)
 	}
 
-	actuator, err := terraform.NewMachineActuator(*kubeadmToken, client.ClusterV1alpha1().Machines(corev1.NamespaceDefault), *namedMachinesPath)
+	actuator, err := huawei.NewMachineActuator(*kubeadmToken, client.ClusterV1alpha1().Machines(corev1.NamespaceDefault), *machineSetupConfigPath)
 	if err != nil {
-		glog.Fatalf("Could not create Terraform machine actuator: %v", err)
+		glog.Fatalf("Could not create Huawei machine actuator: %v", err)
 	}
 
 	shutdown := make(chan struct{})

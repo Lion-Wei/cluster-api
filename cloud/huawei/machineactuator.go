@@ -182,7 +182,7 @@ func (hc *HuaweiClient) Delete(machine *clusterv1.Machine) error {
 	// TODO: handle delete result
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.DeleteMachine(
-			"error deleting GCE instance: %v", err))
+			"error deleting Huawei instance: %v", err))
 	}
 
 	return err
@@ -312,7 +312,7 @@ func (hc *HuaweiClient) PostDelete(cluster *clusterv1.Cluster, machines []*clust
 	return nil
 }
 
-// If the GCEClient has a client for updating Machine objects, this will set
+// If the HuaweiClient has a client for updating Machine objects, this will set
 // the appropriate reason/message on the Machine.Status. If not, such as during
 // cluster installation, it will operate as a no-op. It also returns the
 // original error for convenience, so callers can do "return handleMachineError(...)".

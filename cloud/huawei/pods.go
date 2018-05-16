@@ -1,5 +1,5 @@
 /*
-Copyright 2017 The Kubernetes Authors.
+Copyright 2018 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package huawei
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"text/template"
@@ -31,7 +30,7 @@ import (
 
 var apiServerImage = "gcr.io/k8s-cluster-api/cluster-apiserver:0.0.2"
 var controllerManagerImage = "gcr.io/k8s-cluster-api/controller-manager:0.0.2"
-var machineControllerImage = "gcr.io/karangoel-gke-1/huawei-machine-controller:0.0.1-dev"
+var machineControllerImage = "gcr.io/huawei-clusterAPI/huawei-machine-controller:0.0.1-dev"
 
 func init() {
 	if img, ok := os.LookupEnv("MACHINE_CONTROLLER_IMAGE"); ok {
@@ -93,8 +92,6 @@ func CreateApiServerAndController(token string) error {
 	if err != nil {
 		return err
 	}
-
-	ioutil.WriteFile("/tmp/pods.yaml", tmplBuf.Bytes(), 0644)
 
 	maxTries := 5
 	for tries := 0; tries < maxTries; tries++ {

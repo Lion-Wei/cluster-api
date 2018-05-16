@@ -23,4 +23,4 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go install -a -ldflags '-extldflags "-static"' sigs.k8s.io/cluster-api/cloud/huawei/cmd/huawei-machine-controller
 
 # Final container
-COPY --from=builder /go/bin/terraform-machine-controller .
+COPY --from=builder /go/bin/huawei-machine-controller .

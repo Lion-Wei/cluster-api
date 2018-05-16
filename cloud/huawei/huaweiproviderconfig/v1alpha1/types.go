@@ -1,5 +1,5 @@
 /*
-Copyright 2017 The Kubernetes Authors.
+Copyright 2018 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +23,12 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type HuaweiProviderConfig struct {
 	metav1.TypeMeta `json:",inline"`
+	// The name of your server instance.
+	Name string `json:"name"`
+	// The flavor reference, as a UUID or full URL, for the flavor for your server instance.
+	FlavorRef string `json:"flavorRef"`
+	// The UUID of the image to use for your server instance.
+	ImageRef string `json:"imageRef"`
 
 	AvailabilityZone string `json:"availability_zone"`
 	// need more element for HuaweiProviderConfig
