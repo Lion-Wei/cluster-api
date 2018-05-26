@@ -188,6 +188,26 @@ func (opts InstanceListOpts) ToServerListQuery() (string, error) {
 	return q.String(), nil
 }
 
+type KeyPairCreateOpts struct {
+	Name string `json:"name"`
+}
+
+func (opts *KeyPairCreateOpts) ToServerDeleteMap() (map[string]interface{}, error) {
+	server := make(map[string]interface{})
+	if opts.Name == "" {
+		return nil, fmt.Errorf("Missing field required for keypair creation: name")
+	}
+	server["name"] = opts.Name
+	return server, nil
+}
+
+type SshKeyPair struct {
+	Name       string `json:"name"`
+	PublicKey  string `json:"public_key"`
+	PrivateKey string `json:"private_key"`
+	UserId     string `json:"user_id"`
+}
+
 type InstanceListResult struct {
 	Name  string         `json:"name"`
 	Id    string         `json:"id"`

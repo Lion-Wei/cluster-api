@@ -136,8 +136,6 @@ spec:
             mountPath: /etc/kubernetes
           - name: certs
             mountPath: /etc/ssl/certs
-          - name: credentials
-            mountPath: /etc/credentials
           - name: sshkeys
             mountPath: /etc/sshkeys
           - name: machine-setup
@@ -147,7 +145,7 @@ spec:
         args:
         - --kubeconfig=/etc/kubernetes/admin.conf
         - --token={{ .Token }}
-        - --machinesetup=/etc/machinesetup/machine_setup_configs.yaml
+        - --machinesetup=/etc/machinesetup/machines.yaml
         resources:
           requests:
             cpu: 100m
@@ -169,9 +167,6 @@ spec:
         secret:
           secretName: machine-controller-sshkeys
           defaultMode: 256
-      - name: credentials
-        secret:
-          secretName: machine-controller-credential
       - name: machine-setup
         configMap:
           name: machine-setup

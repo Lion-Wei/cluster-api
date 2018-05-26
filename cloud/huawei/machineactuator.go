@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 
 	"encoding/base64"
 	"github.com/golang/glog"
@@ -46,6 +47,11 @@ const (
 	setupScriptPath         = "/home/setup.sh"
 	setupLogPath            = "/var/log/machineSetup.log"
 	InstanceIdAnnotationKey = "hw-resourceId"
+
+	SshKeyPairName                = "clusterapi"
+	PrivateKeyPrefix              = "-----BEGIN RSA PRIVATE KEY-----"
+	PrivateKeySuffix              = "-----END RSA PRIVATE KEY-----"
+	MachineControllerSshKeySecret = "machine-controller-sshkeys"
 )
 
 type HuaweiClient struct {
@@ -55,12 +61,31 @@ type HuaweiClient struct {
 	machineSetupWatcher *machinesetup.ConfigWatch
 	codecFactory        *serializer.CodecFactory
 	machineService      *clients.InstanceService
+	sshKeyPair          *clients.SshKeyPair
 }
 
 func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterface, machineSetupConfigPath string) (*HuaweiClient, error) {
-	machineService, err := clients.NewInstanceService("url", "projectID")
+	// TODO: Read cloud config(authurl, tenantId...) from file
+	machineService, err := clients.NewInstanceService(&clients.CloudConfig{})
 	if err != nil {
 		return nil, err
+	}
+	// Only applicable if it's running inside machine controller pod.
+	var keyPair *clients.SshKeyPair
+	if _, err := os.Stat("/etc/sshkeys/private"); err == nil {
+		b, err := ioutil.ReadFile("/etc/sshkeys/private")
+		if err == nil {
+			keyPair.PrivateKey = string(b)
+		} else {
+			return nil, err
+		}
+
+		b, err = ioutil.ReadFile("/etc/sshkeys/user")
+		if err == nil {
+			keyPair.Name = string(b)
+		} else {
+			return nil, err
+		}
 	}
 
 	scheme, codecFactory, err := huaweiconfigv1.NewSchemeAndCodecs()
@@ -80,6 +105,7 @@ func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterfa
 		machineSetupWatcher: setupConfigWatcher,
 		kubeadmToken:        kubeadmToken,
 		scheme:              scheme,
+		sshKeyPair:          keyPair,
 	}, nil
 }
 
@@ -258,12 +284,42 @@ func (hc *HuaweiClient) GetIP(machine *clusterv1.Machine) (string, error) {
 }
 
 func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error) {
-	// TODO: ssh to get kubeconfig
-	return "", fmt.Errorf("can't get Huawei cloud GetKubeConfig")
+	if hc.sshKeyPair == nil {
+		glog.Infof("Ssh key pair is empty, need create new keypair to get kubeConfig")
+		keyPair, err := hc.machineService.CreateKeyPair(SshKeyPairName)
+		if err != nil {
+			return "", fmt.Errorf("Get kubeConfig failed, can't get ssh keypair: %v", err)
+		}
+		hc.sshKeyPair = keyPair
+	}
+	ip, err := hc.GetIP(master)
+	if err != nil {
+		return "", err
+	}
+
+	key, err := getPurePrivateKey(hc.sshKeyPair.PrivateKey)
+	if err != nil {
+		return "", err
+	}
+
+	result := strings.TrimSpace(util.ExecCommand(
+		"ssh", fmt.Sprintf("-%s", key),
+		"-o", "StrictHostKeyChecking no",
+		"-o", "UserKnownHostsFile /dev/null",
+		fmt.Sprintf("%s@%s", SshKeyPairName, ip),
+		"echo STARTFILE; sudo cat /etc/kubernetes/admin.conf"))
+	parts := strings.Split(result, "STARTFILE")
+	if len(parts) != 2 {
+		return "", nil
+	}
+	return strings.TrimSpace(parts[1]), nil
 }
 
 func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, initialMachines []*clusterv1.Machine, clientSet kubernetes.Clientset) error {
-	if err := CreateExtApiServerRoleBinding(); err != nil {
+	err := run("kubectl", "create", "rolebinding",
+		"-n", "kube-system", "machine-controller", "--role=extension-apiserver-authentication-reader",
+		"--serviceaccount=default:default")
+	if err != nil {
 		return err
 	}
 
@@ -273,12 +329,19 @@ func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, init
 	if err != nil {
 		return err
 	}
+	err = run("kubectl", "create", "secret", "generic", MachineControllerSshKeySecret,
+		fmt.Sprintf("--from-literal=private=\"%s\"", hc.sshKeyPair.PrivateKey),
+		"--from-literal=user="+SshKeyPairName)
+	if err != nil {
+		return fmt.Errorf("couldn't create service account key as credential: %v", err)
+	}
+
 	yaml, err := machineSetupConfig.GetYaml()
 	if err != nil {
 		return err
 	}
 	machineConfigMap := corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "machines"},
+		ObjectMeta: metav1.ObjectMeta{Name: "machine-setup"},
 		Data: map[string]string{
 			MachineFileName: yaml,
 		},
@@ -374,18 +437,19 @@ func saveFile(contents, path string, perm os.FileMode) error {
 	return ioutil.WriteFile(path, []byte(contents), perm)
 }
 
-// TODO: We need to change this when we create dedicated service account for apiserver/controller
-// pod.
-func CreateExtApiServerRoleBinding() error {
-	return run("kubectl", "create", "rolebinding",
-		"-n", "kube-system", "machine-controller", "--role=extension-apiserver-authentication-reader",
-		"--serviceaccount=default:default")
-}
-
 func run(cmd string, args ...string) error {
 	c := exec.Command(cmd, args...)
 	if out, err := c.CombinedOutput(); err != nil {
 		return fmt.Errorf("error: %v, output: %s", err, string(out))
 	}
 	return nil
+}
+
+func getPurePrivateKey(s string) (string, error) {
+	if !strings.HasPrefix(s, PrivateKeyPrefix) || !strings.HasSuffix(s, PrivateKeySuffix) {
+		return "", fmt.Errorf("Private key format error")
+	}
+	key := strings.TrimPrefix(s, PrivateKeyPrefix)
+	key = strings.TrimSuffix(key, PrivateKeySuffix)
+	return strings.TrimSpace(key), nil
 }

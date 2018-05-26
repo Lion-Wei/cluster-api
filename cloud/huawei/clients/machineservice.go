@@ -23,6 +23,7 @@ import (
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"golang.org/x/net/html/atom"
+	"k8s.io/violin/api/v1"
 	"net/http"
 	"time"
 )
@@ -186,4 +187,34 @@ func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err err
 		case <-time.After(hwWaitSleep):
 		}
 	}
+}
+
+func (is *InstanceService) CreateKeyPair(name string) (keyPair *SshKeyPair, err error) {
+	opts := KeyPairCreateOpts{
+		Name: name,
+	}
+	reqBody, err := opts.ToServerDeleteMap()
+	if err != nil {
+		return nil, err
+	}
+
+	var res Result
+	client := is.cloudserver
+	res.Response, res.Err = client.Post(client.ServiceURL("os-keypairs"), reqBody, &res.Body, &gophercloud.RequestOpts{
+		OkCodes: []int{200},
+	})
+	if res.Err != nil {
+		return nil, fmt.Errorf("Create keypair failed: %v", res.Err)
+	}
+	body, _ := json.Marshal(res.Body)
+
+	var keyPairs []SshKeyPair
+	if err := json.Unmarshal(body, &keyPairs); err != nil {
+		return nil, fmt.Errorf("Create keypair failed: %v", err)
+	}
+	if len(keyPairs) == 0 {
+		return nil, fmt.Errorf("Create keypair failed")
+	}
+	// in this case, should only have one keypair return
+	return &keyPairs[0], nil
 }
