@@ -17,73 +17,173 @@ limitations under the License.
 package clients
 
 import (
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"golang.org/x/net/html/atom"
+	"net/http"
+	"time"
 )
 
 const (
-	HttpsHead = "https://"
+	defaultTimeout                = time.Duration(30) * time.Second
+	CreateServerJobType           = "createServer"
+	JobInit             JobStatus = "INIT"
+	JobSuccess          JobStatus = "SUCCESS"
+	JobFailed           JobStatus = "FAILED"
+	JobRunning          JobStatus = "RUNNING"
+
+	hwTimeOut   = 10 * time.Minute
+	hwWaitSleep = 10 * time.Second
 )
 
-// TODO: finish machine service
-type MachineService struct {
+type InstanceService struct {
 	cloudserver *gophercloud.ServiceClient
-	region      string
-	version     string
-	apiUrl      string
 }
 
-// url to create client
-// url to create cloudserver
-func NewMachineService(url, projectid string) (*MachineService, error) {
-	client, err := openstack.NewClient(url)
+type InstanceList struct {
+	Name string
+	Id   string
+}
+
+func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
+	client, err := openstack.NewClient(cfg.AuthUrl)
 	if err != nil {
 		return nil, err
 	}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+	client.HTTPClient.Transport = transport
+	client.HTTPClient.Timeout = defaultTimeout
 
-	v1EvsUrl := gophercloud.NormalizeURL(HttpsHead + url + "v1/" + projectid)
-	cloudServer := &gophercloud.ServiceClient{ProviderClient: client, Endpoint: v1EvsUrl}
-	return &MachineService{
+	evsUrl := gophercloud.NormalizeURL(cfg.ApiGWAddr + "v1/" + cfg.TenantId)
+	cloudServer := &gophercloud.ServiceClient{ProviderClient: client, Endpoint: evsUrl}
+	return &InstanceService{
 		cloudserver: cloudServer,
-		region:      "region",
-		version:     "version",
-		apiUrl:      "url",
 	}, nil
 }
 
-// CreateMachine creates a machine instance and returns the machineId of the instance.
-func (ms *MachineService) CreateMachine(options MachineCreateOptions) (result MachineCreateResult, err error) {
-	return result, nil
+func (is *InstanceService) InstanceCreate(opts InstanceCreateOptions) (instanceId string, err error) {
+	var res Result
+	reqBody, err := opts.ToInstanceCreateMap()
+	if err != nil {
+		return "", err
+	}
+	client := is.cloudserver
+	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers"), reqBody, &res.Body, &gophercloud.RequestOpts{
+		OkCodes: []int{200, 201, 202, 203, 204},
+	})
+
+	return is.WaitJobFinish(res)
 }
 
-func (ms *MachineService) DeleteMachine(keyInfo ResourceKeyInfo) (result MachineDeleteResult, err error) {
-	return result, nil
-}
-func (ms *MachineService) GetMachine(keyInfo ResourceKeyInfo) (result MachineGetResult, err error) {
-	return result, nil
+func (is *InstanceService) InstanceDelete(id string) error {
+	var res Result
+	opts := InstanceDeleteOpts{
+		Servers: []map[string]string{{
+			"id": id,
+		}},
+	}
+	reqBody, err := opts.ToServerDeleteMap()
+	if err != nil {
+		return err
+	}
+
+	client := is.cloudserver
+	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers", "delete"), reqBody, &res.Body, &gophercloud.RequestOpts{
+		OkCodes: []int{200, 201, 202, 203, 204},
+	})
+
+	_, err = is.WaitJobFinish(res)
+	return err
 }
 
-type MachineCreateOptions struct {
-	AvailabilityZone string
-	Metadata         map[string]string
-	Image            string
+func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList []*InstanceList, err error) {
+	var res Result
+	var listRes []InstanceListResult
+	client := is.cloudserver
+	url := client.ServiceURL("servers")
+
+	if opts != nil {
+		query, err := opts.ToServerListQuery()
+		if err != nil {
+			return nil, fmt.Errorf("Failed to get listQuery: %v", err)
+		}
+		url += query
+	}
+	res.Response, res.Err = client.Get(url, &res.Body, nil)
+	if res.Err != nil {
+		return nil, fmt.Errorf("Failed to get instance list: %v", res.Err)
+	}
+	body, _ := json.Marshal(res.Body)
+	json.Unmarshal(body, &listRes)
+	if len(listRes) == 0 {
+		return instanceList, nil
+	}
+	for _, instance := range listRes {
+		instanceList = append(instanceList, &InstanceList{
+			Name: instance.Name,
+			Id:   instance.Id,
+		})
+	}
+	return instanceList, nil
 }
 
-type MachineCreateResult struct {
+func (is *InstanceService) GetInstance(resourceId string) (instance *InstanceDetail, err error) {
+	var res Result
+	client := is.cloudserver
+	res.Response, res.Err = client.Get(client.ServiceURL("servers", resourceId), &res.Body, &gophercloud.RequestOpts{
+		OkCodes: []int{200, 203},
+	})
+	if res.Err != nil {
+		return nil, res.Err
+	}
+	body, _ := json.Marshal(res.Body)
+	err = json.Unmarshal(body, instance)
+	if err != nil {
+		return nil, err
+	}
+	return instance, nil
 }
 
-type ResourceKeyInfo struct {
-	Ident string
-}
+func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
+	body, _ := json.Marshal(res.Body)
+	var serverResp struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(body, &serverResp); err != nil {
+		return "", fmt.Errorf("Failed to get jobId: %v", err)
+	}
 
-type MachineDeleteResult struct {
-}
+	start := time.Now()
+	client, res, jobRes := is.cloudserver, Result{}, JobDetail{}
 
-type MachineGetResult struct {
-	NetworkInterfaces []*NetworkInterface `json:"networkInterfaces,omitempty"`
-}
-
-type NetworkInterface struct {
-	Name string
-	IP   string
+	for {
+		res.Response, res.Err = client.Get(client.ServiceURL("jobs", serverResp.JobID), &res.Body, nil)
+		if res.Err != nil {
+			return "", res.Err
+		}
+		body, _ = json.Marshal(res.Body)
+		json.Unmarshal(body, &jobRes)
+		if jobRes.Status == JobSuccess {
+			if jobRes.JobType != CreateServerJobType {
+				return "", nil
+			}
+			subJobs := jobRes.Entities.SubJobs
+			if len(subJobs) == 0 {
+				return "", nil
+			}
+			return subJobs[0].Entities["server_id"], nil
+		}
+		select {
+		case <-time.After(hwTimeOut):
+			return "", fmt.Errorf("wait job %q timed out after %v", jobRes.JobType, time.Since(start))
+		case <-time.After(hwWaitSleep):
+		}
+	}
 }

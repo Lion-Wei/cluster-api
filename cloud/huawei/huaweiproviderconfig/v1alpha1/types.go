@@ -29,7 +29,27 @@ type HuaweiProviderConfig struct {
 	FlavorRef string `json:"flavorRef"`
 	// The UUID of the image to use for your server instance.
 	ImageRef string `json:"imageRef"`
+	// A networks object. Required parameter when there are multiple networks defined for the tenant.
+	// When you do not specify the networks parameter, the server attaches to the only network created for the current tenant.
+	Networks []NetworkParam `json:"networks,omitempty"`
 
-	AvailabilityZone string `json:"availability_zone"`
-	// need more element for HuaweiProviderConfig
+	// The availability zone from which to launch the server.
+	AvailabilityZone string `json:"availability_zone,omitempty"`
+
+	VpcID      string     `json:"vpcid"`
+	Count      int        `json:"count"`
+	RootVolume RootVolume `json:"root_volume"`
+}
+
+type NetworkParam struct {
+	// The UUID of the network. Required if you omit the port attribute.
+	UUID string `json:"uuid,omitempty"`
+	// A fixed IPv4 address for the NIC.
+	FixedIp string `json:"fixed_ip,omitempty"`
+}
+
+type RootVolume struct {
+	VolumeType  string                 `json:"volumeType"`
+	Size        int                    `json:"diskSize,omitempty"`
+	ExtendParam map[string]interface{} `json:"extendParam,omitempty"`
 }

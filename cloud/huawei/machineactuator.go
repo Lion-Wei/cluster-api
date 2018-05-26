@@ -22,10 +22,11 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"path"
 	"reflect"
 
+	"encoding/base64"
 	"github.com/golang/glog"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,16 +41,12 @@ import (
 	"sigs.k8s.io/cluster-api/util"
 )
 
-type MachineService interface {
-	// CreateMachine creates a machine instance and returns the machineId of the instance.
-	CreateMachine(options clients.MachineCreateOptions) (clients.MachineCreateResult, error)
-	// DeleteMachine deletes the machine with the specified machineId.
-	DeleteMachine(keyInfo clients.ResourceKeyInfo) (clients.MachineDeleteResult, error)
-	// GetMachine gets the machine with the specified machineId.
-	GetMachine(keyInfo clients.ResourceKeyInfo) (clients.MachineGetResult, error)
-}
-
-const MachineFileName = "machines.yaml"
+const (
+	MachineFileName         = "machines.yaml"
+	setupScriptPath         = "/home/setup.sh"
+	setupLogPath            = "/var/log/machineSetup.log"
+	InstanceIdAnnotationKey = "hw-resourceId"
+)
 
 type HuaweiClient struct {
 	scheme              *runtime.Scheme
@@ -57,16 +54,15 @@ type HuaweiClient struct {
 	machineClient       client.MachineInterface
 	machineSetupWatcher *machinesetup.ConfigWatch
 	codecFactory        *serializer.CodecFactory
-	machineService      MachineService
+	machineService      *clients.InstanceService
 }
 
 func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterface, machineSetupConfigPath string) (*HuaweiClient, error) {
-	// initial machineService
-	machineService, err := clients.NewMachineService("url", "projectID")
+	machineService, err := clients.NewInstanceService("url", "projectID")
 	if err != nil {
 		return nil, err
 	}
-	// get scheme and codecFactory
+
 	scheme, codecFactory, err := huaweiconfigv1.NewSchemeAndCodecs()
 	if err != nil {
 		return nil, err
@@ -88,7 +84,6 @@ func NewMachineActuator(kubeadmToken string, machineClient client.MachineInterfa
 }
 
 func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Machine) error {
-	// validate machine config
 	if hc.machineSetupWatcher == nil {
 		return errors.New("a valid machine setup config watcher is required!")
 	}
@@ -103,7 +98,40 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 		return hc.handleMachineError(machine, verr)
 	}
 
-	// get machine info
+	instance, err := hc.instanceExists(machine)
+	if err != nil {
+		return err
+	}
+	if instance != nil {
+		glog.Infof("Skipped creating a VM that already exists.\n")
+		return nil
+	}
+
+	opts := clients.InstanceCreateOptions{
+		Name:      providerConfig.Name,
+		ImageRef:  providerConfig.ImageRef,
+		FlavorRef: providerConfig.FlavorRef,
+		VpcId:     providerConfig.VpcID,
+		RootVolume: &clients.RootVolume{
+			VolumeType:  providerConfig.RootVolume.VolumeType,
+			Size:        providerConfig.RootVolume.Size,
+			ExtendParam: providerConfig.RootVolume.ExtendParam,
+		},
+	}
+
+	if providerConfig.AvailabilityZone != "" {
+		opts.AvailabilityZone = providerConfig.AvailabilityZone
+	}
+
+	if len(providerConfig.Networks) != 0 {
+		for _, nic := range providerConfig.Networks {
+			opts.Nics = append(opts.Nics, clients.Nic{
+				SubnetId:  nic.UUID,
+				IpAddress: nic.FixedIp,
+			})
+		}
+	}
+
 	machineSetupConfig, err := hc.machineSetupWatcher.GetMachineSetupConfig()
 	if err != nil {
 		return err
@@ -116,49 +144,41 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 	if err != nil {
 		return err
 	}
-	metadate, err := machineSetupConfig.GetMetadata(configParams)
-	if err != nil {
-		return err
+	var file servers.File
+	file = servers.File{
+		Path:     setupScriptPath,
+		Contents: []byte(setupScript),
 	}
-	image, err := machineSetupConfig.GetImage(configParams)
-	if err != nil {
-		return err
-	}
-	az := providerConfig.AvailabilityZone
+	opts.Personality = append(opts.Personality, &file)
 
-	// check instance exist or not
-	instance, err := hc.instanceIfExists(machine)
+	personality, err := machineSetupConfig.GetPersonality(configParams)
 	if err != nil {
 		return err
 	}
+	if personality != nil && len(personality) != 0 {
+		for _, per := range personality {
+			file = servers.File{
+				Path:     per.Path,
+				Contents: per.Contents,
+			}
+			opts.Personality = append(opts.Personality, &file)
+		}
+	}
 
-	if instance != nil {
-		glog.Infof("Skipped creating a VM that already exists. \n")
-		return nil
-	}
-	// TODO: more options need to be fill in
-	opt := clients.MachineCreateOptions{
-		AvailabilityZone: az,
-		Metadate:         metadate,
-		Image:            image,
-	}
-	// TODO: need handle response
-	_, err = hc.machineService.CreateMachine(opt)
+	cmd := fmt.Sprintf(machinesetup.StartCmd, setupScriptPath, setupScriptPath, setupLogPath)
+	opts.UserData = base64.StdEncoding.EncodeToString([]byte(cmd))
+
+	id, err := hc.machineService.InstanceCreate(opts)
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.CreateMachine(
 			"error creating Huawei instance: %v", err))
 	}
 
-	if err = saveFile(setupScript, path.Join("/tmp", "machine-setup.sh"), 0644); err != nil {
-		return hc.handleMachineError(machine, apierrors.CreateMachine(
-			"error creating Huawei instance: %v", err))
-	}
-	// TODO: wait for instance ready, scp machine-setup.sh to instance
-	return nil
+	return hc.updateAnnotation(machine, id)
 }
 
 func (hc *HuaweiClient) Delete(machine *clusterv1.Machine) error {
-	instance, err := hc.instanceIfExists(machine)
+	instance, err := hc.instanceExists(machine)
 	if err != nil {
 		return err
 	}
@@ -168,37 +188,17 @@ func (hc *HuaweiClient) Delete(machine *clusterv1.Machine) error {
 		return nil
 	}
 
-	config, err := hc.providerconfig(machine.Spec.ProviderConfig)
-	if err != nil {
-		return hc.handleMachineError(machine,
-			apierrors.InvalidMachineConfiguration("Cannot unmarshal providerConfig field: %v", err))
-	}
-
-	if verr := hc.validateMachine(machine, config); verr != nil {
-		return hc.handleMachineError(machine, verr)
-	}
-
-	_, err = hc.machineService.DeleteMachine(clients.ResourceKeyInfo{Ident: machine.Spec.Name})
-	// TODO: handle delete result
+	id := machine.ObjectMeta.Annotations[InstanceIdAnnotationKey]
+	err = hc.machineService.InstanceDelete(id)
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.DeleteMachine(
 			"error deleting Huawei instance: %v", err))
 	}
 
-	return err
+	return nil
 }
 
 func (hc *HuaweiClient) Update(cluster *clusterv1.Cluster, machine *clusterv1.Machine) error {
-	// Before updating, do some basic validation of the object first.
-	config, err := hc.providerconfig(machine.Spec.ProviderConfig)
-	if err != nil {
-		return hc.handleMachineError(machine,
-			apierrors.InvalidMachineConfiguration("Cannot unmarshal providerConfig field: %v", err))
-	}
-	if verr := hc.validateMachine(machine, config); verr != nil {
-		return hc.handleMachineError(machine, verr)
-	}
-
 	status, err := hc.instanceStatus(machine)
 	if err != nil {
 		return err
@@ -206,11 +206,10 @@ func (hc *HuaweiClient) Update(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 
 	currentMachine := (*clusterv1.Machine)(status)
 	if currentMachine == nil {
-		instance, err := hc.instanceIfExists(machine)
+		instance, err := hc.instanceExists(machine)
 		if err != nil {
 			return err
 		}
-		// TODO: Populating current state for boostrap machine
 		if instance == nil {
 			return fmt.Errorf("Cannot retrieve current state to update machine %v", machine.ObjectMeta.Name)
 		}
@@ -235,15 +234,12 @@ func (hc *HuaweiClient) Update(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 			}
 		}
 	}
-	if err != nil {
-		return err
-	}
-	err = hc.updateInstanceStatus(machine)
-	return err
+
+	return nil
 }
 
 func (hc *HuaweiClient) Exists(machine *clusterv1.Machine) (bool, error) {
-	instance, err := hc.instanceIfExists(machine)
+	instance, err := hc.instanceExists(machine)
 	if err != nil {
 		return false, err
 	}
@@ -251,19 +247,14 @@ func (hc *HuaweiClient) Exists(machine *clusterv1.Machine) (bool, error) {
 }
 
 func (hc *HuaweiClient) GetIP(machine *clusterv1.Machine) (string, error) {
-	instance, err := hc.machineService.GetMachine(clients.ResourceKeyInfo{Ident: machine.Spec.Name})
+	instance, err := hc.instanceExists(machine)
 	if err != nil {
 		return "", err
 	}
-
-	var publicIP string
-
-	for _, networkInterface := range instance.NetworkInterfaces {
-		if networkInterface.Name == "nic0" {
-			publicIP = networkInterface.IP
-		}
+	if instance == nil {
+		return "", fmt.Errorf("Machine instance doesn't not exist")
 	}
-	return publicIP, nil
+	return instance.AccessIPv4, nil
 }
 
 func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error) {
@@ -277,12 +268,8 @@ func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, init
 	}
 
 	// Create the named machines ConfigMap.
-	// After pivot-based bootstrap is done, the named machine should be a ConfigMap and this logic will be removed.
+	// TODO: After pivot-based bootstrap is done, the named machine should be a ConfigMap and this logic will be removed.
 	machineSetupConfig, err := hc.machineSetupWatcher.GetMachineSetupConfig()
-	if err != nil {
-		return err
-	}
-
 	if err != nil {
 		return err
 	}
@@ -290,14 +277,13 @@ func (hc *HuaweiClient) CreateMachineController(cluster *clusterv1.Cluster, init
 	if err != nil {
 		return err
 	}
-	nmConfigMap := corev1.ConfigMap{
+	machineConfigMap := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "machines"},
 		Data: map[string]string{
 			MachineFileName: yaml,
 		},
 	}
-	configMaps := clientSet.CoreV1().ConfigMaps(corev1.NamespaceDefault)
-	if _, err := configMaps.Create(&nmConfigMap); err != nil {
+	if _, err := clientSet.CoreV1().ConfigMaps(corev1.NamespaceDefault).Create(&machineConfigMap); err != nil {
 		return err
 	}
 
@@ -329,6 +315,18 @@ func (hc *HuaweiClient) handleMachineError(machine *clusterv1.Machine, err *apie
 	return err
 }
 
+func (hc *HuaweiClient) updateAnnotation(machine *clusterv1.Machine, id string) error {
+	if machine.ObjectMeta.Annotations == nil {
+		machine.ObjectMeta.Annotations = make(map[string]string)
+	}
+	machine.ObjectMeta.Annotations[InstanceIdAnnotationKey] = id
+	_, err := hc.machineClient.Update(machine)
+	if err != nil {
+		return err
+	}
+	return hc.updateInstanceStatus(machine)
+}
+
 func (hc *HuaweiClient) requiresUpdate(a *clusterv1.Machine, b *clusterv1.Machine) bool {
 	// Do not want status changes. Do want changes that impact machine provisioning
 	return !reflect.DeepEqual(a.Spec.ObjectMeta, b.Spec.ObjectMeta) ||
@@ -338,9 +336,16 @@ func (hc *HuaweiClient) requiresUpdate(a *clusterv1.Machine, b *clusterv1.Machin
 		a.ObjectMeta.Name != b.ObjectMeta.Name
 }
 
-func (hc *HuaweiClient) instanceIfExists(machine *clusterv1.Machine) (instanceStatus, error) {
-	// TODO: consider
-	return hc.instanceStatus(machine)
+func (hc *HuaweiClient) instanceExists(machine *clusterv1.Machine) (instance *clients.InstanceDetail, err error) {
+	id, find := machine.Annotations[InstanceIdAnnotationKey]
+	if !find {
+		return nil, nil
+	}
+	instance, err = hc.machineService.GetInstance(id)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get instance: %v", err)
+	}
+	return instance, err
 }
 
 // providerconfig get huawei provider config

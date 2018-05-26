@@ -29,7 +29,7 @@ import (
 type MachineSetupConfig interface {
 	GetYaml() (string, error)
 	GetImage(params *ConfigParams) (string, error)
-	GetMetadata(params *ConfigParams) (map[string]string, error)
+	GetPersonality(params *ConfigParams) ([]Personality, error)
 	GetSetupScript(params *ConfigParams) (string, error)
 }
 
@@ -56,16 +56,29 @@ type config struct {
 	Params []ConfigParams `json:"machineParams"`
 
 	Image string `json:"image"`
-	// Metadata key and value pairs.
-	Metadata map[string]string `json:"metadata,omitempty"`
 
 	StartupScript string `json:"startupScript"`
+
+	// The file path and contents, text only, to inject into the server at launch.
+	Personality []Personality `json:"personality,omitempty"`
 }
 
 type ConfigParams struct {
 	Roles    []clustercommon.MachineRole
 	Versions clusterv1.MachineVersionInfo
 }
+
+type Personality struct {
+	Path     string `json:"path,omitempty"`
+	Contents []byte `json:"contents,omitempty"`
+}
+
+var StartCmd = `#cloud-config
+disable_root: false
+runcmd:
+- [ bash, -c, "chmod +x %s" ]
+- [ bash, -c, "nohup %s > %s 2>&1 &" ]
+`
 
 func NewConfigWatch(path string) (*ConfigWatch, error) {
 	if _, err := os.Stat(path); err != nil {
@@ -113,12 +126,12 @@ func (vc *ValidConfigs) GetImage(params *ConfigParams) (string, error) {
 	return machineSetupConfig.Image, nil
 }
 
-func (vc *ValidConfigs) GetMetadata(params *ConfigParams) (map[string]string, error) {
+func (vc *ValidConfigs) GetPersonality(params *ConfigParams) ([]Personality, error) {
 	machineSetupConfig, err := vc.matchMachineSetupConfig(params)
 	if err != nil {
 		return nil, err
 	}
-	return machineSetupConfig.Metadata, nil
+	return machineSetupConfig.Personality, nil
 }
 
 func (vc *ValidConfigs) GetSetupScript(params *ConfigParams) (string, error) {

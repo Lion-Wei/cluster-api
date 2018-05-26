@@ -24,7 +24,6 @@ import (
 	"k8s.io/apiserver/pkg/util/logs"
 
 	"sigs.k8s.io/cluster-api/cloud/huawei"
-	"sigs.k8s.io/cluster-api/cloud/terraform"
 	"sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset"
 	"sigs.k8s.io/cluster-api/pkg/controller/config"
 	"sigs.k8s.io/cluster-api/pkg/controller/machine"
