@@ -9,7 +9,6 @@ items:
       containerRuntime:
         name: docker
         version: 1.12.0
-  image: projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts
   metadata:
     startupScript: |
       set -e
@@ -72,38 +71,19 @@ items:
       EOF
       systemctl daemon-reload
       systemctl restart kubelet.service
-      PRIVATEIP=`curl --retry 5 -sfH "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/0/ip"`
-      echo $PRIVATEIP > /tmp/.ip
-      PUBLICIP=`curl --retry 5 -sfH "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"`
-
-      # Set up the GCE cloud config, which gets picked up by kubeadm init since cloudProvider is set to GCE.
-      cat > /etc/kubernetes/cloud-config <<EOF
-      [global]
-      project-id = ${PROJECT}
-      network-name = ${NETWORK}
-      subnetwork-name = ${SUBNETWORK}
-      node-tags = ${NODE_TAG}
-      EOF
 
       # Set up kubeadm config file to pass parameters to kubeadm init.
       cat > /etc/kubernetes/kubeadm_config.yaml <<EOF
       apiVersion: kubeadm.k8s.io/v1alpha1
       kind: MasterConfiguration
-      api:
-        advertiseAddress: ${PUBLICIP}
-        bindPort: ${PORT}
       networking:
         serviceSubnet: ${SERVICE_CIDR}
       kubernetesVersion: v${CONTROL_PLANE_VERSION}
-      cloudProvider: gce
       token: ${TOKEN}
       controllerManagerExtraArgs:
         cluster-cidr: ${POD_CIDR}
         service-cluster-ip-range: ${SERVICE_CIDR}
         allocate-node-cidrs: "true"
-      apiServerCertSANs:
-      - ${PUBLICIP}
-      - ${PRIVATEIP}
       EOF
 
       # Create and set bridge-nf-call-iptables to 1 to pass the kubeadm preflight check.
@@ -127,7 +107,6 @@ items:
       containerRuntime:
         name: docker
         version: 1.12.0
-  image: projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts
   metadata:
     startupScript: |
       set -e

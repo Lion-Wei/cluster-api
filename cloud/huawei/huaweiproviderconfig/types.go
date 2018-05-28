@@ -38,7 +38,6 @@ type HuaweiProviderConfig struct {
 	AvailabilityZone string `json:"availability_zone,omitempty"`
 
 	VpcID      string     `json:"vpcid"`
-	Count      int        `json:"count"`
 	RootVolume RootVolume `json:"root_volume"`
 }
 

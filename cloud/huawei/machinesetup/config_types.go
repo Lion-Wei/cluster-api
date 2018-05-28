@@ -55,8 +55,6 @@ type config struct {
 	// map to the given Image and Metadata.
 	Params []ConfigParams `json:"machineParams"`
 
-	Image string `json:"image"`
-
 	StartupScript string `json:"startupScript"`
 
 	// The file path and contents, text only, to inject into the server at launch.
