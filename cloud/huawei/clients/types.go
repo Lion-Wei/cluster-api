@@ -24,9 +24,11 @@ import (
 )
 
 type CloudConfig struct {
-	AuthUrl   string `json:"auth_url"`
-	TenantId  string `json:"tenant_id"`
-	ApiGWAddr string `json:"ApiGWAddr"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	DomainName string `json:"domain_name"`
+	TenantID   string `json:"tenant_id"`
+	Region     string `json:"region"`
 }
 
 type InstanceCreateOptions struct {

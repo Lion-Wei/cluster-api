@@ -17,14 +17,12 @@ limitations under the License.
 package clients
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
-	"golang.org/x/net/html/atom"
-	"k8s.io/violin/api/v1"
-	"net/http"
+	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	"time"
 )
 
@@ -41,7 +39,10 @@ const (
 )
 
 type InstanceService struct {
-	cloudserver *gophercloud.ServiceClient
+	provider      *gophercloud.ProviderClient
+	serviceClient *gophercloud.ServiceClient
+	iamClient     *gophercloud.ServiceClient
+	authOptions   *gophercloud.AuthOptions
 }
 
 type InstanceList struct {
@@ -50,23 +51,55 @@ type InstanceList struct {
 }
 
 func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
-	client, err := openstack.NewClient(cfg.AuthUrl)
+	authUrl := gophercloud.NormalizeURL("https://iam." + cfg.Region + ".myhuaweicloud.com/v3")
+	opts := &gophercloud.AuthOptions{
+		IdentityEndpoint: authUrl,
+		Username:         cfg.Username,
+		Password:         cfg.Password,
+		DomainName:       cfg.DomainName,
+		TenantID:         cfg.TenantID,
+	}
+	provider, err := openstack.AuthenticatedClient(*opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Create providerClient err: %v", err)
 	}
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
-	}
-	client.HTTPClient.Transport = transport
-	client.HTTPClient.Timeout = defaultTimeout
 
-	evsUrl := gophercloud.NormalizeURL(cfg.ApiGWAddr + "v1/" + cfg.TenantId)
-	cloudServer := &gophercloud.ServiceClient{ProviderClient: client, Endpoint: evsUrl}
+	iamClient, err := openstack.NewIdentityV3(provider, gophercloud.EndpointOpts{
+		Region: "",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Create iamClient err: %v", err)
+	}
+
+	serviceClient, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
+		Region: cfg.Region,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Create serviceClient err: %v", err)
+	}
 	return &InstanceService{
-		cloudserver: cloudServer,
+		provider:      provider,
+		iamClient:     iamClient,
+		serviceClient: serviceClient,
+		authOptions:   opts,
 	}, nil
+}
+
+// UpdateToken to update token if need.
+func (is *InstanceService) UpdateToken() error {
+	token := is.provider.Token()
+	result, err := tokens.Validate(is.iamClient, token)
+	if err != nil {
+		return fmt.Errorf("Validate token err: %v", err)
+	}
+	if result {
+		return nil
+	}
+	glog.V(2).Infof("Toen is out of date, need get new token.")
+	if is.provider.ReauthFunc() != nil {
+		return fmt.Errorf("reAuth err: %v", err)
+	}
+	return nil
 }
 
 func (is *InstanceService) InstanceCreate(opts InstanceCreateOptions) (instanceId string, err error) {
@@ -75,7 +108,7 @@ func (is *InstanceService) InstanceCreate(opts InstanceCreateOptions) (instanceI
 	if err != nil {
 		return "", err
 	}
-	client := is.cloudserver
+	client := is.serviceClient
 	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers"), reqBody, &res.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 201, 202, 203, 204},
 	})
@@ -95,7 +128,7 @@ func (is *InstanceService) InstanceDelete(id string) error {
 		return err
 	}
 
-	client := is.cloudserver
+	client := is.serviceClient
 	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers", "delete"), reqBody, &res.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 201, 202, 203, 204},
 	})
@@ -107,7 +140,7 @@ func (is *InstanceService) InstanceDelete(id string) error {
 func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList []*InstanceList, err error) {
 	var res Result
 	var listRes []InstanceListResult
-	client := is.cloudserver
+	client := is.serviceClient
 	url := client.ServiceURL("servers")
 
 	if opts != nil {
@@ -137,7 +170,7 @@ func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList
 
 func (is *InstanceService) GetInstance(resourceId string) (instance *InstanceDetail, err error) {
 	var res Result
-	client := is.cloudserver
+	client := is.serviceClient
 	res.Response, res.Err = client.Get(client.ServiceURL("servers", resourceId), &res.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 203},
 	})
@@ -162,7 +195,7 @@ func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err err
 	}
 
 	start := time.Now()
-	client, res, jobRes := is.cloudserver, Result{}, JobDetail{}
+	client, res, jobRes := is.serviceClient, Result{}, JobDetail{}
 
 	for {
 		res.Response, res.Err = client.Get(client.ServiceURL("jobs", serverResp.JobID), &res.Body, nil)
@@ -199,7 +232,7 @@ func (is *InstanceService) CreateKeyPair(name string) (keyPair *SshKeyPair, err 
 	}
 
 	var res Result
-	client := is.cloudserver
+	client := is.serviceClient
 	res.Response, res.Err = client.Post(client.ServiceURL("os-keypairs"), reqBody, &res.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200},
 	})
