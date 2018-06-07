@@ -34,16 +34,22 @@ func TestInstanceList(t *testing.T) {
 
 	// test instance list
 	list, err := is.getInstanceList(nil)
-	if err != nil || len(list) == 0 {
+	if err != nil || len(*list) == 0 {
 		t.Fatalf("Get instance list failed.")
 	}
 
-	for _, instance := range list {
-		detail, err := is.GetInstance(instance.Id)
+	for _, instance := range *list {
+		detail, err := is.GetInstance(instance.ID)
 		if err != nil {
 			t.Fatalf("Get instance detail failed: %v", err)
 		}
 		fmt.Printf("instance detail is: %v", detail)
 	}
 
+	// test create keyPair
+	keyPair, err := is.CreateKeyPair("root")
+	if err != nil {
+		t.Fatalf("Create keyPair Faied: %v", err)
+	}
+	t.Fatalf("KeyPair is: %+v", keyPair)
 }

@@ -17,38 +17,54 @@ limitations under the License.
 package clients
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
-	"time"
+	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
 )
 
-const (
-	defaultTimeout                = time.Duration(30) * time.Second
-	CreateServerJobType           = "createServer"
-	JobInit             JobStatus = "INIT"
-	JobSuccess          JobStatus = "SUCCESS"
-	JobFailed           JobStatus = "FAILED"
-	JobRunning          JobStatus = "RUNNING"
-
-	hwTimeOut   = 10 * time.Minute
-	hwWaitSleep = 10 * time.Second
-)
+// const (
+// 	defaultTimeout                = time.Duration(30) * time.Second
+// 	CreateServerJobType           = "createServer"
+// 	JobInit             JobStatus = "INIT"
+// 	JobSuccess          JobStatus = "SUCCESS"
+// 	JobFailed           JobStatus = "FAILED"
+// 	JobRunning          JobStatus = "RUNNING"
+//
+// 	hwTimeOut   = 10 * time.Minute
+// 	hwWaitSleep = 10 * time.Second
+// )
 
 type InstanceService struct {
-	provider      *gophercloud.ProviderClient
-	serviceClient *gophercloud.ServiceClient
-	iamClient     *gophercloud.ServiceClient
-	authOptions   *gophercloud.AuthOptions
+	provider     *gophercloud.ProviderClient
+	serverClient *gophercloud.ServiceClient
+	iamClient    *gophercloud.ServiceClient
 }
 
-type InstanceList struct {
-	Name string
-	Id   string
+type CloudConfig struct {
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	DomainName string `json:"domain_name"`
+	TenantID   string `json:"tenant_id"`
+	Region     string `json:"region"`
+}
+
+type InstanceListOpts struct {
+	// Name of the image in URL format.
+	Image string `q:"image"`
+
+	// Name of the flavor in URL format.
+	Flavor string `q:"flavor"`
+
+	// Name of the server as a string; can be queried with regular expressions.
+	// Realize that ?name=bob returns both bob and bobb. If you need to match bob
+	// only, you can use a regular expression matching the syntax of the
+	// underlying database server implemented for Compute.
+	Name string `q:"name"`
 }
 
 func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
@@ -73,17 +89,16 @@ func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
 		return nil, fmt.Errorf("Create iamClient err: %v", err)
 	}
 
-	serviceClient, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
+	serverClient, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
 		Region: cfg.Region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Create serviceClient err: %v", err)
 	}
 	return &InstanceService{
-		provider:      provider,
-		iamClient:     iamClient,
-		serviceClient: serviceClient,
-		authOptions:   opts,
+		provider:     provider,
+		iamClient:    iamClient,
+		serverClient: serverClient,
 	}, nil
 }
 
@@ -105,42 +120,35 @@ func (is *InstanceService) UpdateToken() error {
 	return nil
 }
 
-func (is *InstanceService) InstanceCreate(opts InstanceCreateOptions) (instanceId string, err error) {
-	var res Result
-	reqBody, err := opts.ToInstanceCreateMap()
-	if err != nil {
-		return "", err
+func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderConfig) (instance *servers.Server, err error) {
+	var createOpts servers.CreateOpts
+	if config == nil {
+		return nil, fmt.Errorf("create Options need be specified to create instace.")
 	}
-	client := is.serviceClient
-	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers"), reqBody, &res.Body, &gophercloud.RequestOpts{
-		OkCodes: []int{200, 201, 202, 203, 204},
-	})
-
-	return is.WaitJobFinish(res)
+	createOpts = servers.CreateOpts{
+		Name:             config.Name,
+		ImageRef:         config.ImageRef,
+		FlavorRef:        config.FlavorRef,
+		AvailabilityZone: config.AvailabilityZone,
+		Networks: []servers.Network{{
+			UUID: config.Networks[0].UUID,
+		}},
+	}
+	server, err := servers.Create(is.serverClient, keypairs.CreateOptsExt{
+		CreateOptsBuilder: createOpts,
+		KeyName:           "key_name",
+	}).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("Create new server err: %v", err)
+	}
+	return server, nil
 }
 
 func (is *InstanceService) InstanceDelete(id string) error {
-	var res Result
-	opts := InstanceDeleteOpts{
-		Servers: []map[string]string{{
-			"id": id,
-		}},
-	}
-	reqBody, err := opts.ToServerDeleteMap()
-	if err != nil {
-		return err
-	}
-
-	client := is.serviceClient
-	res.Response, res.Err = client.Post(client.ServiceURL("cloudservers", "delete"), reqBody, &res.Body, &gophercloud.RequestOpts{
-		OkCodes: []int{200, 201, 202, 203, 204},
-	})
-
-	_, err = is.WaitJobFinish(res)
-	return err
+	return servers.Delete(is.serverClient, id).ExtractErr()
 }
 
-func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList []*InstanceList, err error) {
+func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]servers.Server, error) {
 	var listOpts servers.ListOpts
 	if opts != nil {
 		listOpts = servers.ListOpts{
@@ -150,98 +158,72 @@ func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList
 		listOpts = servers.ListOpts{}
 	}
 
-	allPages, err := servers.List(is.serviceClient, listOpts).AllPages()
+	allPages, err := servers.List(is.serverClient, listOpts).AllPages()
 	if err != nil {
 		return nil, fmt.Errorf("Get service list err: %v", err)
 	}
-	servers, err := servers.ExtractServers(allPages)
+	instanceList, err := servers.ExtractServers(allPages)
 	if err != nil {
 		return nil, fmt.Errorf("Extract services list err: %v", err)
 	}
-	for _, server := range servers {
-		instance := &InstanceList{
-			Name: server.Name,
-			Id:   server.ID,
-		}
-		instanceList = append(instanceList, instance)
-	}
-	return instanceList, nil
+	return &instanceList, nil
 }
 
 func (is *InstanceService) GetInstance(resourceId string) (instance *servers.Server, err error) {
 	if resourceId == "" {
 		return nil, fmt.Errorf("ResourceId should be specified to  get detail.")
 	}
-	server, err := servers.Get(is.serviceClient, resourceId).Extract()
+	server, err := servers.Get(is.serverClient, resourceId).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("Get server %q detail failed: %v", resourceId, err)
 	}
 	return server, err
 }
 
-func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
-	body, _ := json.Marshal(res.Body)
-	var serverResp struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal(body, &serverResp); err != nil {
-		return "", fmt.Errorf("Failed to get jobId: %v", err)
-	}
+// func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
+// 	body, _ := json.Marshal(res.Body)
+// 	var serverResp struct {
+// 		JobID string `json:"job_id"`
+// 	}
+// 	if err := json.Unmarshal(body, &serverResp); err != nil {
+// 		return "", fmt.Errorf("Failed to get jobId: %v", err)
+// 	}
+//
+// 	start := time.Now()
+// 	client, res, jobRes := is.serverClient, Result{}, JobDetail{}
+//
+// 	for {
+// 		res.Response, res.Err = client.Get(client.ServiceURL("jobs", serverResp.JobID), &res.Body, nil)
+// 		if res.Err != nil {
+// 			return "", res.Err
+// 		}
+// 		body, _ = json.Marshal(res.Body)
+// 		json.Unmarshal(body, &jobRes)
+// 		if jobRes.Status == JobSuccess {
+// 			if jobRes.JobType != CreateServerJobType {
+// 				return "", nil
+// 			}
+// 			subJobs := jobRes.Entities.SubJobs
+// 			if len(subJobs) == 0 {
+// 				return "", nil
+// 			}
+// 			return subJobs[0].Entities["server_id"], nil
+// 		}
+// 		select {
+// 		case <-time.After(hwTimeOut):
+// 			return "", fmt.Errorf("wait job %q timed out after %v", jobRes.JobType, time.Since(start))
+// 		case <-time.After(hwWaitSleep):
+// 		}
+// 	}
+// }
 
-	start := time.Now()
-	client, res, jobRes := is.serviceClient, Result{}, JobDetail{}
-
-	for {
-		res.Response, res.Err = client.Get(client.ServiceURL("jobs", serverResp.JobID), &res.Body, nil)
-		if res.Err != nil {
-			return "", res.Err
-		}
-		body, _ = json.Marshal(res.Body)
-		json.Unmarshal(body, &jobRes)
-		if jobRes.Status == JobSuccess {
-			if jobRes.JobType != CreateServerJobType {
-				return "", nil
-			}
-			subJobs := jobRes.Entities.SubJobs
-			if len(subJobs) == 0 {
-				return "", nil
-			}
-			return subJobs[0].Entities["server_id"], nil
-		}
-		select {
-		case <-time.After(hwTimeOut):
-			return "", fmt.Errorf("wait job %q timed out after %v", jobRes.JobType, time.Since(start))
-		case <-time.After(hwWaitSleep):
-		}
-	}
-}
-
-func (is *InstanceService) CreateKeyPair(name string) (keyPair *SshKeyPair, err error) {
-	opts := KeyPairCreateOpts{
+func (is *InstanceService) CreateKeyPair(name string) (keyPair *keypairs.KeyPair, err error) {
+	opts := keypairs.CreateOpts{
 		Name: name,
 	}
-	reqBody, err := opts.ToServerDeleteMap()
+	keyPair, err = keypairs.Create(is.serverClient, opts).Extract()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Create keyPair failed: %v", err)
 	}
-
-	var res Result
-	client := is.serviceClient
-	res.Response, res.Err = client.Post(client.ServiceURL("os-keypairs"), reqBody, &res.Body, &gophercloud.RequestOpts{
-		OkCodes: []int{200},
-	})
-	if res.Err != nil {
-		return nil, fmt.Errorf("Create keypair failed: %v", res.Err)
-	}
-	body, _ := json.Marshal(res.Body)
-
-	var keyPairs []SshKeyPair
-	if err := json.Unmarshal(body, &keyPairs); err != nil {
-		return nil, fmt.Errorf("Create keypair failed: %v", err)
-	}
-	if len(keyPairs) == 0 {
-		return nil, fmt.Errorf("Create keypair failed")
-	}
-	// in this case, should only have one keypair return
-	return &keyPairs[0], nil
+	return keyPair, err
 }

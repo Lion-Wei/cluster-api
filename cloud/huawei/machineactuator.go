@@ -194,7 +194,7 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 	cmd := fmt.Sprintf(machinesetup.StartCmd, setupScriptPath, setupScriptPath, setupLogPath)
 	opts.UserData = base64.StdEncoding.EncodeToString([]byte(cmd))
 
-	id, err := hc.machineService.InstanceCreate(opts)
+	id, err := hc.machineService.InstanceCreate(&opts)
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.CreateMachine(
 			"error creating Huawei instance: %v", err))
