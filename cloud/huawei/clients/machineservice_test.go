@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -33,8 +34,16 @@ func TestInstanceList(t *testing.T) {
 
 	// test instance list
 	list, err := is.getInstanceList(nil)
-	if err != nil {
+	if err != nil || len(list) == 0 {
 		t.Fatalf("Get instance list failed.")
 	}
-	t.Logf("instance List is:\n%v", list)
+
+	for _, instance := range list {
+		detail, err := is.GetInstance(instance.Id)
+		if err != nil {
+			t.Fatalf("Get instance detail failed: %v", err)
+		}
+		fmt.Printf("instance detail is: %v", detail)
+	}
+
 }

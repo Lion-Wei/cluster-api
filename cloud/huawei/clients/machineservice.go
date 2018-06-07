@@ -22,6 +22,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	"time"
 )
@@ -58,6 +59,7 @@ func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
 		Password:         cfg.Password,
 		DomainName:       cfg.DomainName,
 		TenantID:         cfg.TenantID,
+		AllowReauth:      true,
 	}
 	provider, err := openstack.AuthenticatedClient(*opts)
 	if err != nil {
@@ -96,7 +98,8 @@ func (is *InstanceService) UpdateToken() error {
 		return nil
 	}
 	glog.V(2).Infof("Toen is out of date, need get new token.")
-	if is.provider.ReauthFunc() != nil {
+	reAuthFunction := is.provider.ReauthFunc
+	if reAuthFunction() != nil {
 		return fmt.Errorf("reAuth err: %v", err)
 	}
 	return nil
@@ -138,51 +141,42 @@ func (is *InstanceService) InstanceDelete(id string) error {
 }
 
 func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (instanceList []*InstanceList, err error) {
-	var res Result
-	var listRes []InstanceListResult
-	client := is.serviceClient
-	url := client.ServiceURL("servers")
-
+	var listOpts servers.ListOpts
 	if opts != nil {
-		query, err := opts.ToServerListQuery()
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get listQuery: %v", err)
+		listOpts = servers.ListOpts{
+			Name: opts.Name,
 		}
-		url += query
+	} else {
+		listOpts = servers.ListOpts{}
 	}
-	res.Response, res.Err = client.Get(url, &res.Body, nil)
-	if res.Err != nil {
-		return nil, fmt.Errorf("Failed to get instance list: %v", res.Err)
+
+	allPages, err := servers.List(is.serviceClient, listOpts).AllPages()
+	if err != nil {
+		return nil, fmt.Errorf("Get service list err: %v", err)
 	}
-	body, _ := json.Marshal(res.Body)
-	json.Unmarshal(body, &listRes)
-	if len(listRes) == 0 {
-		return instanceList, nil
+	servers, err := servers.ExtractServers(allPages)
+	if err != nil {
+		return nil, fmt.Errorf("Extract services list err: %v", err)
 	}
-	for _, instance := range listRes {
-		instanceList = append(instanceList, &InstanceList{
-			Name: instance.Name,
-			Id:   instance.Id,
-		})
+	for _, server := range servers {
+		instance := &InstanceList{
+			Name: server.Name,
+			Id:   server.ID,
+		}
+		instanceList = append(instanceList, instance)
 	}
 	return instanceList, nil
 }
 
-func (is *InstanceService) GetInstance(resourceId string) (instance *InstanceDetail, err error) {
-	var res Result
-	client := is.serviceClient
-	res.Response, res.Err = client.Get(client.ServiceURL("servers", resourceId), &res.Body, &gophercloud.RequestOpts{
-		OkCodes: []int{200, 203},
-	})
-	if res.Err != nil {
-		return nil, res.Err
+func (is *InstanceService) GetInstance(resourceId string) (instance *servers.Server, err error) {
+	if resourceId == "" {
+		return nil, fmt.Errorf("ResourceId should be specified to  get detail.")
 	}
-	body, _ := json.Marshal(res.Body)
-	err = json.Unmarshal(body, instance)
+	server, err := servers.Get(is.serviceClient, resourceId).Extract()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Get server %q detail failed: %v", resourceId, err)
 	}
-	return instance, nil
+	return server, err
 }
 
 func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
