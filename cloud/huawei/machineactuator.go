@@ -257,7 +257,7 @@ func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error)
 		return "", err
 	}
 
-	key, err := getPurePrivateKey(hc.sshKeyPair.PrivateKey)
+	key, err := clients.GetPurePrivateKey(hc.sshKeyPair.PrivateKey)
 	if err != nil {
 		return "", err
 	}
@@ -403,13 +403,4 @@ func run(cmd string, args ...string) error {
 		return fmt.Errorf("error: %v, output: %s", err, string(out))
 	}
 	return nil
-}
-
-func getPurePrivateKey(s string) (string, error) {
-	if !strings.HasPrefix(s, PrivateKeyPrefix) || !strings.HasSuffix(s, PrivateKeySuffix) {
-		return "", fmt.Errorf("Private key format error")
-	}
-	key := strings.TrimPrefix(s, PrivateKeyPrefix)
-	key = strings.TrimSuffix(key, PrivateKeySuffix)
-	return strings.TrimSpace(key), nil
 }

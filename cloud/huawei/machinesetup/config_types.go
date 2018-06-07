@@ -28,7 +28,6 @@ import (
 
 type MachineSetupConfig interface {
 	GetYaml() (string, error)
-	GetImage(params *ConfigParams) (string, error)
 	GetPersonality(params *ConfigParams) ([]Personality, error)
 	GetSetupScript(params *ConfigParams) (string, error)
 }
@@ -114,14 +113,6 @@ func (vc *ValidConfigs) GetYaml() (string, error) {
 		return "", err
 	}
 	return string(bytes), nil
-}
-
-func (vc *ValidConfigs) GetImage(params *ConfigParams) (string, error) {
-	machineSetupConfig, err := vc.matchMachineSetupConfig(params)
-	if err != nil {
-		return "", err
-	}
-	return machineSetupConfig.Image, nil
 }
 
 func (vc *ValidConfigs) GetPersonality(params *ConfigParams) ([]Personality, error) {

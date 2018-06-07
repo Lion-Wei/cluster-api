@@ -27,6 +27,12 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
 	"sigs.k8s.io/cluster-api/cloud/huawei/machinesetup"
+	"strings"
+)
+
+const (
+	PrivateKeyPrefix = "-----BEGIN RSA PRIVATE KEY-----"
+	PrivateKeySuffix = "-----END RSA PRIVATE KEY-----"
 )
 
 // const (
@@ -267,4 +273,14 @@ func (is *InstanceService) CreateKeyPair(name string) (*SshKeyPair, error) {
 
 func serverToInstance(server *servers.Server) *Instance {
 	return &Instance{*server}
+}
+
+func GetPurePrivateKey(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, PrivateKeyPrefix) || !strings.HasSuffix(s, PrivateKeySuffix) {
+		return "", fmt.Errorf("Private key format error")
+	}
+	s = strings.TrimPrefix(s, PrivateKeyPrefix)
+	s = strings.TrimSuffix(s, PrivateKeySuffix)
+	return strings.TrimSpace(s), nil
 }

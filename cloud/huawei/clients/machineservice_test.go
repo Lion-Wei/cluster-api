@@ -2,6 +2,7 @@ package clients
 
 import (
 	"fmt"
+	"sigs.k8s.io/cluster-api/util"
 	"testing"
 )
 
@@ -51,5 +52,16 @@ func TestInstanceList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create keyPair Faied: %v", err)
 	}
-	t.Fatalf("KeyPair is: %+v", keyPair)
+
+	// test use ssh key run command in instance
+	key, err := GetPurePrivateKey(keyPair.PrivateKey)
+	res := util.ExecCommand(
+		"ssh", fmt.Sprintf("-%s", key),
+		"-o", "StrictHostKeyChecking no",
+		"-o", "UserKnownHostsFile /dev/null",
+		fmt.Sprintf("%s@%s", keyPair.Name, (*list)[0].AccessIPv4),
+		"echo STARTFILE; sudo cat /root/lw")
+	if res != "Hello, word!" {
+		t.Fatalf("exec ssh command err, res is: %s", res)
+	}
 }
