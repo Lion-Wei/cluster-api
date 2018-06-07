@@ -25,9 +25,7 @@ import (
 	"reflect"
 	"strings"
 
-	"encoding/base64"
 	"github.com/golang/glog"
-	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -133,31 +131,6 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 		return nil
 	}
 
-	opts := clients.InstanceCreateOptions{
-		Name:      providerConfig.Name,
-		ImageRef:  providerConfig.ImageRef,
-		FlavorRef: providerConfig.FlavorRef,
-		VpcId:     providerConfig.VpcID,
-		RootVolume: &clients.RootVolume{
-			VolumeType:  providerConfig.RootVolume.VolumeType,
-			Size:        providerConfig.RootVolume.Size,
-			ExtendParam: providerConfig.RootVolume.ExtendParam,
-		},
-	}
-
-	if providerConfig.AvailabilityZone != "" {
-		opts.AvailabilityZone = providerConfig.AvailabilityZone
-	}
-
-	if len(providerConfig.Networks) != 0 {
-		for _, nic := range providerConfig.Networks {
-			opts.Nics = append(opts.Nics, clients.Nic{
-				SubnetId:  nic.UUID,
-				IpAddress: nic.FixedIp,
-			})
-		}
-	}
-
 	machineSetupConfig, err := hc.machineSetupWatcher.GetMachineSetupConfig()
 	if err != nil {
 		return err
@@ -170,37 +143,24 @@ func (hc *HuaweiClient) Create(cluster *clusterv1.Cluster, machine *clusterv1.Ma
 	if err != nil {
 		return err
 	}
-	var file servers.File
-	file = servers.File{
-		Path:     setupScriptPath,
-		Contents: []byte(setupScript),
-	}
-	opts.Personality = append(opts.Personality, &file)
-
 	personality, err := machineSetupConfig.GetPersonality(configParams)
 	if err != nil {
 		return err
 	}
-	if personality != nil && len(personality) != 0 {
-		for _, per := range personality {
-			file = servers.File{
-				Path:     per.Path,
-				Contents: per.Contents,
-			}
-			opts.Personality = append(opts.Personality, &file)
-		}
-	}
+	personality = append(personality, machinesetup.Personality{
+		Path:     setupScriptPath,
+		Contents: []byte(setupScript),
+	})
 
 	cmd := fmt.Sprintf(machinesetup.StartCmd, setupScriptPath, setupScriptPath, setupLogPath)
-	opts.UserData = base64.StdEncoding.EncodeToString([]byte(cmd))
 
-	id, err := hc.machineService.InstanceCreate(&opts)
+	instance, err = hc.machineService.InstanceCreate(providerConfig, personality, cmd)
 	if err != nil {
 		return hc.handleMachineError(machine, apierrors.CreateMachine(
 			"error creating Huawei instance: %v", err))
 	}
 
-	return hc.updateAnnotation(machine, id)
+	return hc.updateAnnotation(machine, instance.ID)
 }
 
 func (hc *HuaweiClient) Delete(machine *clusterv1.Machine) error {
@@ -399,7 +359,7 @@ func (hc *HuaweiClient) requiresUpdate(a *clusterv1.Machine, b *clusterv1.Machin
 		a.ObjectMeta.Name != b.ObjectMeta.Name
 }
 
-func (hc *HuaweiClient) instanceExists(machine *clusterv1.Machine) (instance *clients.InstanceDetail, err error) {
+func (hc *HuaweiClient) instanceExists(machine *clusterv1.Machine) (instance *clients.Instance, err error) {
 	id, find := machine.Annotations[InstanceIdAnnotationKey]
 	if !find {
 		return nil, nil

@@ -17,6 +17,7 @@ limitations under the License.
 package clients
 
 import (
+	"encoding/base64"
 	"fmt"
 	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
@@ -25,6 +26,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/openstack/identity/v3/tokens"
 	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
+	"sigs.k8s.io/cluster-api/cloud/huawei/machinesetup"
 )
 
 // const (
@@ -53,6 +55,22 @@ type CloudConfig struct {
 	Region     string `json:"region"`
 }
 
+type Instance struct {
+	servers.Server
+}
+
+type SshKeyPair struct {
+	Name string `json:"name"`
+
+	// PublicKey is the public key from this pair, in OpenSSH format.
+	// "ssh-rsa AAAAB3Nz..."
+	PublicKey string `json:"public_key"`
+
+	// PrivateKey is the private key from this pair, in PEM format.
+	// "-----BEGIN RSA PRIVATE KEY-----\nMIICXA..."
+	// It is only present if this KeyPair was just returned from a Create call.
+	PrivateKey string `json:"private_key"`
+}
 type InstanceListOpts struct {
 	// Name of the image in URL format.
 	Image string `q:"image"`
@@ -120,10 +138,18 @@ func (is *InstanceService) UpdateToken() error {
 	return nil
 }
 
-func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderConfig) (instance *servers.Server, err error) {
+func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderConfig, per []machinesetup.Personality, cmd string) (instance *Instance, err error) {
 	var createOpts servers.CreateOpts
 	if config == nil {
 		return nil, fmt.Errorf("create Options need be specified to create instace.")
+	}
+	userData := base64.StdEncoding.EncodeToString([]byte(cmd))
+	var personality servers.Personality
+	for _, file := range per {
+		personality = append(personality, &servers.File{
+			Path:     file.Path,
+			Contents: file.Contents,
+		})
 	}
 	createOpts = servers.CreateOpts{
 		Name:             config.Name,
@@ -133,6 +159,8 @@ func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderC
 		Networks: []servers.Network{{
 			UUID: config.Networks[0].UUID,
 		}},
+		UserData:    []byte(userData),
+		Personality: personality,
 	}
 	server, err := servers.Create(is.serverClient, keypairs.CreateOptsExt{
 		CreateOptsBuilder: createOpts,
@@ -141,14 +169,14 @@ func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderC
 	if err != nil {
 		return nil, fmt.Errorf("Create new server err: %v", err)
 	}
-	return server, nil
+	return serverToInstance(server), nil
 }
 
 func (is *InstanceService) InstanceDelete(id string) error {
 	return servers.Delete(is.serverClient, id).ExtractErr()
 }
 
-func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]servers.Server, error) {
+func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]Instance, error) {
 	var listOpts servers.ListOpts
 	if opts != nil {
 		listOpts = servers.ListOpts{
@@ -162,14 +190,18 @@ func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]servers.S
 	if err != nil {
 		return nil, fmt.Errorf("Get service list err: %v", err)
 	}
-	instanceList, err := servers.ExtractServers(allPages)
+	serverList, err := servers.ExtractServers(allPages)
 	if err != nil {
 		return nil, fmt.Errorf("Extract services list err: %v", err)
+	}
+	var instanceList []Instance
+	for _, server := range serverList {
+		instanceList = append(instanceList, Instance{server})
 	}
 	return &instanceList, nil
 }
 
-func (is *InstanceService) GetInstance(resourceId string) (instance *servers.Server, err error) {
+func (is *InstanceService) GetInstance(resourceId string) (instance *Instance, err error) {
 	if resourceId == "" {
 		return nil, fmt.Errorf("ResourceId should be specified to  get detail.")
 	}
@@ -177,7 +209,7 @@ func (is *InstanceService) GetInstance(resourceId string) (instance *servers.Ser
 	if err != nil {
 		return nil, fmt.Errorf("Get server %q detail failed: %v", resourceId, err)
 	}
-	return server, err
+	return serverToInstance(server), err
 }
 
 // func (is *InstanceService) WaitJobFinish(res Result) (resourceId string, err error) {
@@ -217,13 +249,22 @@ func (is *InstanceService) GetInstance(resourceId string) (instance *servers.Ser
 // 	}
 // }
 
-func (is *InstanceService) CreateKeyPair(name string) (keyPair *keypairs.KeyPair, err error) {
+func (is *InstanceService) CreateKeyPair(name string) (*SshKeyPair, error) {
 	opts := keypairs.CreateOpts{
 		Name: name,
 	}
-	keyPair, err = keypairs.Create(is.serverClient, opts).Extract()
+	keyPair, err := keypairs.Create(is.serverClient, opts).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("Create keyPair failed: %v", err)
 	}
-	return keyPair, err
+
+	return &SshKeyPair{
+		Name:       keyPair.Name,
+		PrivateKey: keyPair.PrivateKey,
+		PublicKey:  keyPair.PrivateKey,
+	}, err
+}
+
+func serverToInstance(server *servers.Server) *Instance {
+	return &Instance{*server}
 }
