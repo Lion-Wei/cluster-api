@@ -18,6 +18,7 @@ package clients
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"github.com/golang/glog"
 	"github.com/gophercloud/gophercloud"
@@ -303,4 +304,31 @@ func GetPurePrivateKey(s string) (string, error) {
 	s = strings.TrimPrefix(s, PrivateKeyPrefix)
 	s = strings.TrimSuffix(s, PrivateKeySuffix)
 	return strings.TrimSpace(s), nil
+}
+
+func getIPFromInstance(instance Instance) (string, error) {
+	type huaweiNetwork struct {
+		Addr    string  `json:"addr"`
+		Version float64 `json:"version"`
+		Type    string  `json:"OS-EXT-IPS:type"`
+	}
+
+	for _, b := range instance.Addresses {
+		list, err := json.Marshal(b)
+		if err != nil {
+			return "", fmt.Errorf("extract IP from instance err: %v", err)
+		}
+		var networkList []interface{}
+		json.Unmarshal(list, &networkList)
+		for _, network := range networkList {
+			var hwNetwork huaweiNetwork
+			b, _ := json.Marshal(network)
+			json.Unmarshal(b, &hwNetwork)
+			fmt.Printf("\nhwNetwork is: %+v\n", hwNetwork)
+			if hwNetwork.Type == "floating" && hwNetwork.Version == 4.0 {
+				return hwNetwork.Addr, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("extract IP from instance err")
 }

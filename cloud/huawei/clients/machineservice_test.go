@@ -3,7 +3,7 @@ package clients
 import (
 	"fmt"
 	"io/ioutil"
-	"sigs.k8s.io/cluster-api/util"
+	"os/exec"
 	"testing"
 )
 
@@ -45,15 +45,15 @@ func TestInstanceList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get instance detail failed: %v", err)
 		}
-		fmt.Printf("instance detail is: %v", detail)
+		fmt.Printf("instance detail is: %+v", detail)
 	}
 
-	// test create keyPair
-	keyPair, err := is.CreateKeyPair("root")
+	// test extract IP from instance
+	ip, err := getIPFromInstance((*list)[0])
 	if err != nil {
-		t.Fatalf("Create keyPair Faied: %v", err)
+		t.Fatal("Extract IP err")
 	}
-
+	fmt.Printf("Got ip is: %q", ip)
 	// test use ssh key run command in instance
 	privateKey := `-----BEGIN RSA PRIVATE KEY-----
 MIICWwIBAAKBgQDqmRwwqRXPFsEE2ipDlt03ePyLjtEP/cS4dKgqWQAnEPUdYr6e
@@ -71,12 +71,18 @@ vRZnZHOClQ3RE+LPAkEAn3QxNC9r3/U7ZHFIhQV5jc4l7W26ucmqJc0Z6WxU6vkq
 D2Cw4GnZoXjN9OX/cHVuGDPygJQpAA7xITRzB4Rz6g==
 -----END RSA PRIVATE KEY-----`
 	ioutil.WriteFile("/root/private.key", []byte(privateKey), 0400)
-	res := util.ExecCommand(
-		"ssh", fmt.Sprintf("-i %s", "/root/private.key"),
-		"-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null",
-		fmt.Sprintf("%s@%s", keyPair.Name, (*list)[0].AccessIPv4),
+	cmd := exec.Command(
+		"ssh", "-i", "/root/private.key",
+		"-o", "StrictHostKeyChecking no",
+		"-o", "UserKnownHostsFile /dev/null",
+		fmt.Sprintf("%s@%s", "root", ip),
 		"echo STARTFILE; sudo cat /root/lw")
-	if res != "Hello, word!" {
-		t.Fatalf("exec ssh command err, res is: %s", res)
+	fmt.Print("ssh", fmt.Sprintf("-i %s", "/root/private.key"),
+		"-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null",
+		fmt.Sprintf("%s@%s", "root", ip),
+		"echo STARTFILE; sudo cat /root/lw")
+	output, err := cmd.Output()
+	if string(output) != "Hello, word!" || err != nil {
+		t.Fatalf("exec ssh command err, res is: %s, err is: %+v", string(output), err)
 	}
 }

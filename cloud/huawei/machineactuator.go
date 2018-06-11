@@ -25,12 +25,14 @@ import (
 	"reflect"
 	"strings"
 
+	"encoding/json"
 	"github.com/golang/glog"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
+	"net"
 	"sigs.k8s.io/cluster-api/cloud/huawei/clients"
 	huaweiconfigv1 "sigs.k8s.io/cluster-api/cloud/huawei/huaweiproviderconfig/v1alpha1"
 	"sigs.k8s.io/cluster-api/cloud/huawei/machinesetup"
@@ -240,7 +242,36 @@ func (hc *HuaweiClient) GetIP(machine *clusterv1.Machine) (string, error) {
 	if instance == nil {
 		return "", fmt.Errorf("Machine instance doesn't not exist")
 	}
-	return instance.AccessIPv4, nil
+
+	// extract ip from instance detail(only support ipv4 type ip for now)
+	if instance.AccessIPv4 != "" && net.ParseIP(instance.AccessIPv4) != nil {
+		return instance.AccessIPv4, nil
+	}
+	return getIPFromInstance(instance)
+}
+
+func getIPFromInstance(instance *clients.Instance) (string, error) {
+	type huaweiNetwork struct {
+		Addr    string `json:"addr"`
+		Version string `json:"version"`
+		Type    string `json:"OS-EXT-IPS:type"`
+	}
+
+	var networkList []huaweiNetwork
+	for _, b := range instance.Addresses {
+		list, err := json.Marshal(b)
+		if err != nil {
+			return "", fmt.Errorf("extract IP from instance err: %v", err)
+		}
+		json.Unmarshal(list, networkList)
+		fmt.Printf("\nlist is: %q\nUnmarsheled to: %+v\n", list, networkList)
+		for _, network := range networkList {
+			if network.Type == "floating" && network.Version == "4" {
+				return network.Addr, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("extract IP from instance err")
 }
 
 func (hc *HuaweiClient) GetKubeConfig(master *clusterv1.Machine) (string, error) {
