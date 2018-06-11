@@ -31,8 +31,10 @@ import (
 )
 
 const (
-	PrivateKeyPrefix = "-----BEGIN RSA PRIVATE KEY-----"
-	PrivateKeySuffix = "-----END RSA PRIVATE KEY-----"
+	PrivateKeyPrefix   = "-----BEGIN RSA PRIVATE KEY-----"
+	PrivateKeySuffix   = "-----END RSA PRIVATE KEY-----"
+	defaultKeyPairName = "root"
+	keyInsertPath      = "/root/.ssh/authorized_keys"
 )
 
 // const (
@@ -51,6 +53,7 @@ type InstanceService struct {
 	provider     *gophercloud.ProviderClient
 	serverClient *gophercloud.ServiceClient
 	iamClient    *gophercloud.ServiceClient
+	SshKeyPair   *SshKeyPair
 }
 
 type CloudConfig struct {
@@ -112,17 +115,29 @@ func NewInstanceService(cfg *CloudConfig) (*InstanceService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Create iamClient err: %v", err)
 	}
-
 	serverClient, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
 		Region: cfg.Region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Create serviceClient err: %v", err)
 	}
+
+	keyPairOpts := keypairs.CreateOpts{
+		Name: defaultKeyPairName,
+	}
+	keyPair, err := keypairs.Create(serverClient, keyPairOpts).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("Create keyPair failed: %v", err)
+	}
 	return &InstanceService{
 		provider:     provider,
 		iamClient:    iamClient,
 		serverClient: serverClient,
+		SshKeyPair: &SshKeyPair{
+			Name:       keyPair.Name,
+			PrivateKey: keyPair.PrivateKey,
+			PublicKey:  keyPair.PublicKey,
+		},
 	}, nil
 }
 
@@ -157,6 +172,11 @@ func (is *InstanceService) InstanceCreate(config *huaweiconfigv1.HuaweiProviderC
 			Contents: file.Contents,
 		})
 	}
+	// Insert ssh public key
+	personality = append(personality, &servers.File{
+		Path:     keyInsertPath,
+		Contents: []byte(is.SshKeyPair.PublicKey),
+	})
 	createOpts = servers.CreateOpts{
 		Name:             config.Name,
 		ImageRef:         config.ImageRef,
