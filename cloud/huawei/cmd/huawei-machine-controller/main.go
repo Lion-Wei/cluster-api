@@ -31,7 +31,6 @@ import (
 )
 
 var (
-	kubeadmToken           = pflag.String("token", "", "Kubeadm token to use to join new machines")
 	machineSetupConfigPath = pflag.String("machinesetup", "machine_setup_configs.yaml", "machine setup configs yaml file")
 )
 
@@ -55,7 +54,7 @@ func main() {
 		glog.Fatalf("Could not create client for talking to the apiserver: %v", err)
 	}
 
-	actuator, err := huawei.NewMachineActuator(*kubeadmToken, client.ClusterV1alpha1().Machines(corev1.NamespaceDefault), *machineSetupConfigPath)
+	actuator, err := huawei.NewMachineActuator(client.ClusterV1alpha1().Machines(corev1.NamespaceDefault))
 	if err != nil {
 		glog.Fatalf("Could not create Huawei machine actuator: %v", err)
 	}

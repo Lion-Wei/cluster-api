@@ -206,20 +206,13 @@ func (is *InstanceService) GetInstance(resourceId string) (instance *Instance, e
 	return serverToInstance(server), err
 }
 
-func (is *InstanceService) CreateKeyPair(name string) (*SshKeyPair, error) {
+func (is *InstanceService) CreateKeyPair(name, publicKey string) error {
 	opts := keypairs.CreateOpts{
-		Name: name,
+		Name:      name,
+		PublicKey: publicKey,
 	}
-	keyPair, err := keypairs.Create(is.serverClient, opts).Extract()
-	if err != nil {
-		return nil, fmt.Errorf("Create keyPair failed: %v", err)
-	}
-
-	return &SshKeyPair{
-		Name:       keyPair.Name,
-		PrivateKey: keyPair.PrivateKey,
-		PublicKey:  keyPair.PrivateKey,
-	}, err
+	_, err := keypairs.Create(is.serverClient, opts).Extract()
+	return err
 }
 
 func serverToInstance(server *servers.Server) *Instance {

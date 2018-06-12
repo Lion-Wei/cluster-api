@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"io/ioutil"
 	"sigs.k8s.io/cluster-api/cloud/google"
+	"sigs.k8s.io/cluster-api/cloud/huawei"
 	"sigs.k8s.io/cluster-api/cloud/vsphere"
 	"sigs.k8s.io/cluster-api/clusterctl/clusterdeployer"
 	"sigs.k8s.io/cluster-api/clusterctl/clusterdeployer/minikube"
@@ -145,6 +146,8 @@ func getProvider(provider string) (clusterdeployer.ProviderDeployer, error) {
 		return google.NewMachineActuator(google.MachineActuatorParams{})
 	case "vsphere":
 		return &vsphereAdapter{vsphere.NewDeploymentClient()}, nil
+	case "openstack":
+		return huawei.NewDeploymentClient(), nil
 	default:
 		return nil, fmt.Errorf("Unrecognized provider %v", provider)
 	}
