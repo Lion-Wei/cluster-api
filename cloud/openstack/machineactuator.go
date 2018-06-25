@@ -49,6 +49,9 @@ const (
 	CloudConfigPath          = "/etc/cloud/cloud_config.yaml"
 	OpenstackIPAnnotationKey = "openstack-ip-address"
 	OpenstackIdAnnotationKey = "openstack-resourceId"
+
+	TimeoutInstanceCreate       = 5 * time.Minute
+	RetryIntervalInstanceStatus = 10 * time.Second
 )
 
 type SshCreds struct {
@@ -95,27 +98,43 @@ func NewMachineActuator(machineClient client.MachineInterface) (*OpenstackClient
 	if err != nil {
 		return nil, err
 	}
-
 	var sshCred SshCreds
-	if _, err := os.Stat(SshPrivateKeyPath); err != nil {
-		return nil, fmt.Errorf("ssh key pair need to be specified")
-	}
-	sshCred.privateKeyPath = SshPrivateKeyPath
-
 	b, err := ioutil.ReadFile(SshKeyUserPath)
 	if err != nil {
 		return nil, err
 	}
 	sshCred.user = string(b)
-
 	b, err = ioutil.ReadFile(SshPublicKeyPath)
 	if err != nil {
 		return nil, err
 	}
 	sshCred.publicKey = string(b)
 
-	if machineService.CreateKeyPair(sshCred.user, sshCred.publicKey) != nil {
-		return nil, fmt.Errorf("create ssh key pair err: %v", err)
+	keyPairList, err := machineService.GetKeyPairList()
+	if err != nil {
+		return nil, err
+	}
+	needCreate := true
+	// check whether keypair already exist
+	for i := range keyPairList {
+		if sshCred.user == keyPairList[i].Name {
+			if sshCred.publicKey == keyPairList[i].PublicKey {
+				needCreate = false
+			} else {
+				machineService.DeleteKeyPair(keyPairList[i].Name)
+			}
+			break
+		}
+	}
+	if needCreate {
+		if _, err := os.Stat(SshPrivateKeyPath); err != nil {
+			return nil, fmt.Errorf("ssh key pair need to be specified")
+		}
+		sshCred.privateKeyPath = SshPrivateKeyPath
+
+		if machineService.CreateKeyPair(sshCred.user, sshCred.publicKey) != nil {
+			return nil, fmt.Errorf("create ssh key pair err: %v", err)
+		}
 	}
 
 	scheme, codecFactory, err := openstackconfigv1.NewSchemeAndCodecs()
@@ -202,6 +221,18 @@ func (oc *OpenstackClient) Create(cluster *clusterv1.Cluster, machine *clusterv1
 			"error creating Openstack instance: %v", err))
 	}
 	// TODO: wait instance ready
+	err = util.PollImmediate(RetryIntervalInstanceStatus, TimeoutInstanceCreate, func() (bool, error) {
+		instance, err := oc.machineService.GetInstance(instance.ID)
+		if err != nil {
+			return false, nil
+		}
+		return instance.Status == "ACTIVE", nil
+	})
+	if err != nil {
+		return oc.handleMachineError(machine, apierrors.CreateMachine(
+			"error creating Openstack instance: %v", err))
+	}
+
 	if providerConfig.FloatingIP != "" {
 		err := oc.machineService.AssociateFloatingIP(instance.ID, providerConfig.FloatingIP)
 		return oc.handleMachineError(machine, apierrors.CreateMachine(

@@ -236,6 +236,18 @@ func (is *InstanceService) CreateKeyPair(name, publicKey string) error {
 	return err
 }
 
+func (is *InstanceService) GetKeyPairList() ([]keypairs.KeyPair, error) {
+	page, err := keypairs.List(is.computeClient).AllPages()
+	if err != nil {
+		return nil, err
+	}
+	return keypairs.ExtractKeyPairs(page)
+}
+
+func (is *InstanceService) DeleteKeyPair(name string) error {
+	return keypairs.Delete(is.computeClient, name).ExtractErr()
+}
+
 func serverToInstance(server *servers.Server) *Instance {
 	return &Instance{*server}
 }
