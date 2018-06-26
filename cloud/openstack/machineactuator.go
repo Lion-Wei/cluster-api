@@ -275,7 +275,10 @@ func (oc *OpenstackClient) Update(cluster *clusterv1.Cluster, machine *clusterv1
 		if err != nil {
 			return err
 		}
-		if instance == nil {
+		if instance != nil && instance.Status == "ACTIVE" {
+			glog.Infof("Populating current state for boostrap machine %v", machine.ObjectMeta.Name)
+			return oc.updateAnnotation(machine, instance.ID)
+		} else {
 			return fmt.Errorf("Cannot retrieve current state to update machine %v", machine.ObjectMeta.Name)
 		}
 	}
@@ -396,6 +399,9 @@ func (oc *OpenstackClient) updateAnnotation(machine *clusterv1.Machine, id strin
 }
 
 func (oc *OpenstackClient) requiresUpdate(a *clusterv1.Machine, b *clusterv1.Machine) bool {
+	if a == nil || b == nil {
+		return true
+	}
 	// Do not want status changes. Do want changes that impact machine provisioning
 	return !reflect.DeepEqual(a.Spec.ObjectMeta, b.Spec.ObjectMeta) ||
 		!reflect.DeepEqual(a.Spec.ProviderConfig, b.Spec.ProviderConfig) ||
