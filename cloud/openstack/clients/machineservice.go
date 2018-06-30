@@ -191,7 +191,7 @@ func (is *InstanceService) InstanceDelete(id string) error {
 	return servers.Delete(is.computeClient, id).ExtractErr()
 }
 
-func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]Instance, error) {
+func (is *InstanceService) GetInstanceList(opts *InstanceListOpts) ([]*Instance, error) {
 	var listOpts servers.ListOpts
 	if opts != nil {
 		listOpts = servers.ListOpts{
@@ -209,11 +209,11 @@ func (is *InstanceService) getInstanceList(opts *InstanceListOpts) (*[]Instance,
 	if err != nil {
 		return nil, fmt.Errorf("Extract services list err: %v", err)
 	}
-	var instanceList []Instance
+	var instanceList []*Instance
 	for _, server := range serverList {
-		instanceList = append(instanceList, Instance{server})
+		instanceList = append(instanceList, serverToInstance(&server))
 	}
-	return &instanceList, nil
+	return instanceList, nil
 }
 
 func (is *InstanceService) GetInstance(resourceId string) (instance *Instance, err error) {

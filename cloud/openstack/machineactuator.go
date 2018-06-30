@@ -418,15 +418,23 @@ func (oc *OpenstackClient) requiresUpdate(a *clusterv1.Machine, b *clusterv1.Mac
 }
 
 func (oc *OpenstackClient) instanceExists(machine *clusterv1.Machine) (instance *clients.Instance, err error) {
-	id, find := machine.Annotations[OpenstackIdAnnotationKey]
-	if !find {
+	machineConfig, err := oc.providerconfig(machine.Spec.ProviderConfig)
+	if err != nil {
+		return nil, err
+	}
+	opts := &clients.InstanceListOpts{
+		Name:   machineConfig.Name,
+		Image:  machineConfig.Image,
+		Flavor: machineConfig.Flavor,
+	}
+	instanceList, err := oc.machineService.GetInstanceList(opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(instanceList) == 0 {
 		return nil, nil
 	}
-	instance, err = oc.machineService.GetInstance(id)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to get instance: %v", err)
-	}
-	return instance, err
+	return instanceList[0], nil
 }
 
 // providerconfig get openstack provider config
