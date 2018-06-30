@@ -333,6 +333,7 @@ func getIPFromInstance(instance *clients.Instance) (string, error) {
 		json.Unmarshal(list, networkList)
 		var addrList []string
 		for _, network := range networkList {
+			fmt.Printf("\nnetwork list is: %v, network version is %f\n", network, network.Version)
 			if network.Version == 4.0 {
 				if network.Type == "floating" {
 					return network.Addr, nil
