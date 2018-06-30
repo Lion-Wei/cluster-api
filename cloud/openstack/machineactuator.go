@@ -319,9 +319,9 @@ func getIPFromInstance(instance *clients.Instance) (string, error) {
 		return instance.AccessIPv4, nil
 	}
 	type network struct {
-		Addr    string `json:"addr"`
-		Version string `json:"version"`
-		Type    string `json:"OS-EXT-IPS:type"`
+		Addr    string  `json:"addr"`
+		Version float64 `json:"version"`
+		Type    string  `json:"OS-EXT-IPS:type"`
 	}
 
 	var networkList []network
@@ -331,11 +331,17 @@ func getIPFromInstance(instance *clients.Instance) (string, error) {
 			return "", fmt.Errorf("extract IP from instance err: %v", err)
 		}
 		json.Unmarshal(list, networkList)
-		fmt.Printf("\nlist is: %q\nUnmarsheled to: %+v\n", list, networkList)
+		var addrList []string
 		for _, network := range networkList {
-			if network.Type == "floating" && network.Version == "4" {
-				return network.Addr, nil
+			if network.Version == 4.0 {
+				if network.Type == "floating" {
+					return network.Addr, nil
+				}
+				addrList = append(addrList, network.Addr)
 			}
+		}
+		if len(addrList) != 0 {
+			return addrList[0], nil
 		}
 	}
 	return "", fmt.Errorf("extract IP from instance err")
@@ -354,7 +360,7 @@ func (oc *OpenstackClient) GetKubeConfig(cluster *clusterv1.Cluster, master *clu
 		"ssh", "-i", oc.sshCred.privateKeyPath,
 		"-o", "StrictHostKeyChecking no",
 		"-o", "UserKnownHostsFile /dev/null",
-		fmt.Sprintf("%s@%s", "root", ip),
+		fmt.Sprintf("cc@%s", ip),
 		"echo STARTFILE; sudo cat /etc/kubernetes/admin.conf"))
 	parts := strings.Split(result, "STARTFILE")
 	if len(parts) != 2 {
