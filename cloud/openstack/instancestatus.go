@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 
+	"github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clusterv1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
 	"sigs.k8s.io/cluster-api/pkg/util"
@@ -66,6 +67,7 @@ func (oc *OpenstackClient) updateInstanceStatus(machine *clusterv1.Machine) erro
 		return err
 	}
 
+	glog.Infof("update machine status: %+v", m.Annotations)
 	_, err = oc.machineClient.Update(m)
 	return err
 }

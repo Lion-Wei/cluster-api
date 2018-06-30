@@ -324,25 +324,27 @@ func getIPFromInstance(instance *clients.Instance) (string, error) {
 		Type    string  `json:"OS-EXT-IPS:type"`
 	}
 
-	var networkList []network
 	for _, b := range instance.Addresses {
 		list, err := json.Marshal(b)
 		if err != nil {
 			return "", fmt.Errorf("extract IP from instance err: %v", err)
 		}
-		json.Unmarshal(list, networkList)
+		var address []interface{}
+		json.Unmarshal(list, &address)
 		var addrList []string
-		for _, network := range networkList {
-			fmt.Printf("\nnetwork list is: %v, network version is %f\n", network, network.Version)
-			if network.Version == 4.0 {
-				if network.Type == "floating" {
-					return network.Addr, nil
+		for _, addr := range address {
+			var net network
+			b, _ := json.Marshal(addr)
+			json.Unmarshal(b, &net)
+			if net.Version == 4.0 {
+				if net.Type == "floating" {
+					return net.Addr, nil
 				}
-				addrList = append(addrList, network.Addr)
+				addrList = append(addrList, net.Addr)
 			}
-		}
-		if len(addrList) != 0 {
-			return addrList[0], nil
+			if len(addrList) != 0 {
+				return addrList[0], nil
+			}
 		}
 	}
 	return "", fmt.Errorf("extract IP from instance err")
@@ -395,9 +397,11 @@ func (oc *OpenstackClient) updateAnnotation(machine *clusterv1.Machine, id strin
 	instance, _ := oc.instanceExists(machine)
 	ip, err := getIPFromInstance(instance)
 	if err != nil {
+		glog.Infof("get ip from instance err: %v", err)
 		return err
 	}
 	machine.ObjectMeta.Annotations[OpenstackIPAnnotationKey] = ip
+	glog.Infof("machine annotation should be: %+v", machine.ObjectMeta.Annotations)
 	_, err = oc.machineClient.Update(machine)
 	if err != nil {
 		return err
