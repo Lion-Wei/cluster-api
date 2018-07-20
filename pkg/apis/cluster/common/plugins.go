@@ -18,9 +18,12 @@ package common
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/golang/glog"
+	clusterv1 "sigs.k8s.io/cluster-api/pkg/apis/cluster/v1alpha1"
+	"sigs.k8s.io/cluster-api/pkg/util"
 )
 
 var (
@@ -48,4 +51,43 @@ func ClusterProvisioner(name string) (interface{}, error) {
 		return nil, fmt.Errorf("unable to find provisioner for %s", name)
 	}
 	return provisioner, nil
+}
+
+const OpenstackIPAnnotationKey = "openstack-ip-address"
+
+func init() {
+	RegisterClusterProvisioner("openstack", &DeploymentClient{})
+}
+
+// TODO: This file should be moved to vendor after #416 finished.
+type DeploymentClient struct{}
+
+func (*DeploymentClient) GetIP(cluster *clusterv1.Cluster, machine *clusterv1.Machine) (string, error) {
+	if machine.ObjectMeta.Annotations != nil {
+		if ip, ok := machine.ObjectMeta.Annotations[OpenstackIPAnnotationKey]; ok {
+			glog.Infof("Returning IP from machine annotation %s", ip)
+			return ip, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not get IP")
+}
+
+func (d *DeploymentClient) GetKubeConfig(cluster *clusterv1.Cluster, master *clusterv1.Machine) (string, error) {
+	ip, err := d.GetIP(cluster, master)
+	if err != nil {
+		return "", err
+	}
+
+	result := strings.TrimSpace(util.ExecCommand(
+		"ssh", "-i", "/root/.ssh/openstack_tmp",
+		"-o", "StrictHostKeyChecking no",
+		"-o", "UserKnownHostsFile /dev/null",
+		fmt.Sprintf("cc@%s", ip),
+		"echo STARTFILE; sudo cat /etc/kubernetes/admin.conf"))
+	parts := strings.Split(result, "STARTFILE")
+	if len(parts) != 2 {
+		return "", nil
+	}
+	return strings.TrimSpace(parts[1]), nil
 }
